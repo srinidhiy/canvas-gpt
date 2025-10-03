@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Plus, Send, Trash2, GitBranch, ChevronDown, Zap, Move } from 'lucide-react';
+import { Plus, Send, Trash2, GitBranch, ChevronDown, Loader2, Move } from 'lucide-react';
 
 // Type definitions
 interface Message {
@@ -19,23 +19,6 @@ interface Node {
   isExpanded: boolean;
   model: string;
 }
-
-const initialNodes: Node[] = [
-  {
-    id: 'root',
-    x: 400,
-    y: 100,
-    messages: [
-      { role: 'assistant' as const, content: 'Hello! I\'m ready to help you explore ideas through branching conversations. What would you like to discuss?' }
-    ],
-    children: [],
-    parent: null,
-    isActive: true,
-    title: 'Main Thread',
-    isExpanded: false,
-    model: 'claude-sonnet-4'
-  }
-];
 
 interface Model {
   id: string;
@@ -62,12 +45,28 @@ interface PanOffset {
   y: number;
 }
 
-const App = () => {
-  const [nodes, setNodes] = useState<Node[]>(initialNodes);
+const CanvasChatApp = () => {
+  const [nodes, setNodes] = useState<Node[]>([
+    {
+      id: 'root',
+      x: 400,
+      y: 100,
+      messages: [
+        { role: 'assistant', content: 'Hello! I\'m ready to help you explore ideas through branching conversations. What would you like to discuss?' }
+      ],
+      children: [],
+      parent: null,
+      isActive: true,
+      title: 'Main Thread',
+      isExpanded: false,
+      model: 'claude-sonnet-4'
+    }
+  ]);
   
   const [draggedNode, setDraggedNode] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<DragOffset>({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState<boolean>(false);
+  const [panStart, setPanStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [panOffset, setPanOffset] = useState<PanOffset>({ x: 0, y: 0 });
   const [zoom, setZoom] = useState<number>(1);
   const canvasRef = useRef<SVGSVGElement>(null);
@@ -75,6 +74,7 @@ const App = () => {
   const [selectedText, setSelectedText] = useState<SelectedText>({});
   const [isProcessing, setIsProcessing] = useState<Record<string, boolean>>({});
   const [showModelSelector, setShowModelSelector] = useState<Record<string, boolean>>({});
+  const chatScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const models: Model[] = [
     { id: 'claude-sonnet-4', name: 'Claude Sonnet 4', short: 'Sonnet 4', description: 'Balanced performance', color: 'bg-blue-50 text-blue-700' },
@@ -91,6 +91,14 @@ const App = () => {
         ? { ...node, messages: [...node.messages, message] }
         : node
     ));
+    
+    // Auto-scroll to bottom after message is added
+    setTimeout(() => {
+      const chatElement = chatScrollRefs.current[nodeId];
+      if (chatElement) {
+        chatElement.scrollTop = chatElement.scrollHeight;
+      }
+    }, 100);
   };
 
   const updateNodeModel = (nodeId: string, modelId: string) => {
@@ -110,7 +118,7 @@ const App = () => {
     ));
   };
 
-  const simulateAIResponse = (_userMessage: string, model: string): string => {
+  const simulateAIResponse = (userMessage: string, model: string): string => {
     const responses = {
       'claude-sonnet-4': [
         "I understand your question. There are several interesting angles we could explore here. We might consider the theoretical foundations, practical applications, or creative interpretations. Each path offers unique insights worth investigating.",
@@ -142,6 +150,7 @@ const App = () => {
     const inputValue = inputValues[nodeId] || '';
     if (!inputValue.trim()) return;
     
+    const node = findNode(nodeId);
     const userMessage: Message = { role: 'user', content: inputValue };
     addMessage(nodeId, userMessage);
     
@@ -151,12 +160,9 @@ const App = () => {
     
     // Simulate AI response after a delay
     setTimeout(() => {
-      const currentNode = findNode(nodeId);
-      if (currentNode) {
-        const aiResponse: Message = { role: 'assistant', content: simulateAIResponse(inputValue, currentNode.model) };
-        addMessage(nodeId, aiResponse);
-        setIsProcessing(prev => ({ ...prev, [nodeId]: false }));
-      }
+      const aiResponse: Message = { role: 'assistant', content: simulateAIResponse(inputValue, node?.model || 'claude-sonnet-4') };
+      addMessage(nodeId, aiResponse);
+      setIsProcessing(prev => ({ ...prev, [nodeId]: false }));
     }, 1200);
   };
 
@@ -205,7 +211,7 @@ const App = () => {
     };
   }, []);
 
-  const createBranchTitle = (selectedTextContent: string, _parentTitle: string): string => {
+  const createBranchTitle = (selectedTextContent: string, parentTitle: string): string => {
     // Clean the text and take first meaningful words
     const cleanText = selectedTextContent.replace(/[^\w\s]/g, ' ').trim();
     const words = cleanText.split(/\s+/).filter(word => word.length > 2);
@@ -213,7 +219,33 @@ const App = () => {
     return firstWords.length > 20 ? firstWords.slice(0, 20) + '...' : firstWords || 'New Branch';
   };
 
-  const createBranchFromText = (parentId: string, _messageIndex: number, selectedTextContent: string) => {
+  const repositionChildren = (parentId: string) => {
+    const parent = findNode(parentId);
+    if (!parent || parent.children.length === 0) return;
+
+    const nodeWidth = 480;
+    const horizontalSpacing = 80;
+    const verticalOffset = 600;
+    
+    // Calculate total width needed for all children
+    const totalWidth = parent.children.length * nodeWidth + (parent.children.length - 1) * horizontalSpacing;
+    const startX = parent.x + (nodeWidth / 2) - (totalWidth / 2);
+    const childY = parent.y + verticalOffset;
+
+    // Update all children positions
+    const updatedNodes = nodes.map(node => {
+      const childIndex = parent.children.indexOf(node.id);
+      if (childIndex !== -1) {
+        const newX = startX + childIndex * (nodeWidth + horizontalSpacing);
+        return { ...node, x: newX, y: childY };
+      }
+      return node;
+    });
+
+    setNodes(updatedNodes);
+  };
+
+  const createBranchFromText = (parentId: string, messageIndex: number, selectedTextContent: string) => {
     const parent = findNode(parentId);
     if (!parent) return;
 
@@ -226,10 +258,20 @@ const App = () => {
       content: `Exploring: "${selectedTextContent}"`
     };
 
+    // Calculate position for new branch immediately
+    const nodeWidth = 480;
+    const horizontalSpacing = 80;
+    const verticalOffset = 600;
+    const newChildrenCount = parent.children.length + 1;
+    const totalWidth = newChildrenCount * nodeWidth + (newChildrenCount - 1) * horizontalSpacing;
+    const startX = parent.x + (nodeWidth / 2) - (totalWidth / 2);
+    const childY = parent.y + verticalOffset;
+    const newX = startX + parent.children.length * (nodeWidth + horizontalSpacing);
+
     const newNode = {
       id: newNodeId,
-      x: parent.x + 500 + (parent.children.length * 50),
-      y: parent.y + 300 + (parent.children.length * 40),
+      x: newX,
+      y: childY,
       messages: [contextMessage],
       children: [],
       parent: parentId,
@@ -239,15 +281,39 @@ const App = () => {
       model: parent.model
     };
 
-    setNodes(prev => [
-      ...prev,
-      newNode,
-      ...prev.map(node => 
-        node.id === parentId 
-          ? { ...node, children: [...node.children, newNodeId] }
-          : node
-      )
-    ]);
+    // Update nodes and reposition ALL children
+    setNodes(prevNodes => {
+      // First add the new node and update parent
+      let updatedNodes = [
+        ...prevNodes.map(node => 
+          node.id === parentId 
+            ? { ...node, children: [...node.children, newNodeId] }
+            : node
+        ),
+        newNode
+      ];
+
+      // Now reposition ALL children of this parent
+      const parentNode = updatedNodes.find(n => n.id === parentId);
+      if (parentNode && parentNode.children.length > 0) {
+        const totalWidth = parentNode.children.length * nodeWidth + (parentNode.children.length - 1) * horizontalSpacing;
+        const startX = parentNode.x + (nodeWidth / 2) - (totalWidth / 2);
+        
+        updatedNodes = updatedNodes.map(node => {
+          const childIndex = parentNode.children.indexOf(node.id);
+          if (childIndex !== -1) {
+            return { 
+              ...node, 
+              x: startX + childIndex * (nodeWidth + horizontalSpacing), 
+              y: childY 
+            };
+          }
+          return node;
+        });
+      }
+
+      return updatedNodes;
+    });
 
     // Clear selection
     setSelectedText({});
@@ -264,12 +330,22 @@ const App = () => {
     const newNodeId = `node-${Date.now()}`;
     const branchNumber = parent.children.length + 1;
     
-    const newNode = {
+    // Calculate position for new branch immediately
+    const nodeWidth = 480;
+    const horizontalSpacing = 80;
+    const verticalOffset = 600;
+    const newChildrenCount = parent.children.length + 1;
+    const totalWidth = newChildrenCount * nodeWidth + (newChildrenCount - 1) * horizontalSpacing;
+    const startX = parent.x + (nodeWidth / 2) - (totalWidth / 2);
+    const childY = parent.y + verticalOffset;
+    const newX = startX + parent.children.length * (nodeWidth + horizontalSpacing);
+    
+    const newNode: Node = {
       id: newNodeId,
-      x: parent.x + 500 + (parent.children.length * 50),
-      y: parent.y + 300 + (parent.children.length * 40),
+      x: newX,
+      y: childY,
       messages: [
-        { role: 'assistant' as const, content: 'New conversation branch started. What would you like to explore?' }
+        { role: 'assistant', content: 'New conversation branch started. What would you like to explore?' }
       ],
       children: [],
       parent: parentId,
@@ -279,15 +355,39 @@ const App = () => {
       model: parent.model
     };
 
-    setNodes(prev => [
-      ...prev,
-      newNode,
-      ...prev.map(node => 
-        node.id === parentId 
-          ? { ...node, children: [...node.children, newNodeId] }
-          : node
-      )
-    ]);
+    // Update nodes and reposition ALL children
+    setNodes(prevNodes => {
+      // First add the new node and update parent
+      let updatedNodes = [
+        ...prevNodes.map(node => 
+          node.id === parentId 
+            ? { ...node, children: [...node.children, newNodeId] }
+            : node
+        ),
+        newNode
+      ];
+
+      // Now reposition ALL children of this parent
+      const parentNode = updatedNodes.find(n => n.id === parentId);
+      if (parentNode && parentNode.children.length > 0) {
+        const totalWidth = parentNode.children.length * nodeWidth + (parentNode.children.length - 1) * horizontalSpacing;
+        const startX = parentNode.x + (nodeWidth / 2) - (totalWidth / 2);
+        
+        updatedNodes = updatedNodes.map(node => {
+          const childIndex = parentNode.children.indexOf(node.id);
+          if (childIndex !== -1) {
+            return { 
+              ...node, 
+              x: startX + childIndex * (nodeWidth + horizontalSpacing), 
+              y: childY 
+            };
+          }
+          return node;
+        });
+      }
+
+      return updatedNodes;
+    });
   };
 
   const deleteNode = (nodeId: string) => {
@@ -296,14 +396,46 @@ const App = () => {
     const nodeToDelete = findNode(nodeId);
     if (!nodeToDelete) return;
 
-    setNodes(prev => prev
-      .filter(node => node.id !== nodeId && !isDescendantOf(node.id, nodeId))
-      .map(node => 
-        node.children.includes(nodeId)
-          ? { ...node, children: node.children.filter(id => id !== nodeId) }
-          : node
-      )
-    );
+    const parentId = nodeToDelete.parent;
+
+    setNodes(prevNodes => {
+      // Remove the node and update parent's children array
+      let updatedNodes = prevNodes
+        .filter(node => node.id !== nodeId && !isDescendantOf(node.id, nodeId))
+        .map(node => 
+          node.children.includes(nodeId)
+            ? { ...node, children: node.children.filter(id => id !== nodeId) }
+            : node
+        );
+
+      // Reposition remaining children if there's a parent
+      if (parentId) {
+        const parentNode = updatedNodes.find(n => n.id === parentId);
+        if (parentNode && parentNode.children.length > 0) {
+          const nodeWidth = 480;
+          const horizontalSpacing = 80;
+          const verticalOffset = 600;
+          
+          const totalWidth = parentNode.children.length * nodeWidth + (parentNode.children.length - 1) * horizontalSpacing;
+          const startX = parentNode.x + (nodeWidth / 2) - (totalWidth / 2);
+          const childY = parentNode.y + verticalOffset;
+
+          updatedNodes = updatedNodes.map(node => {
+            const childIndex = parentNode.children.indexOf(node.id);
+            if (childIndex !== -1) {
+              return { 
+                ...node, 
+                x: startX + childIndex * (nodeWidth + horizontalSpacing), 
+                y: childY 
+              };
+            }
+            return node;
+          });
+        }
+      }
+
+      return updatedNodes;
+    });
   };
 
   const isDescendantOf = (nodeId: string, ancestorId: string): boolean => {
@@ -323,6 +455,7 @@ const App = () => {
     }
     
     e.preventDefault();
+    e.stopPropagation();
     const node = findNode(nodeId);
     if (!node || !canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
@@ -334,24 +467,69 @@ const App = () => {
     });
   };
 
+  const handleCanvasMouseDown = (e: React.MouseEvent) => {
+    if (e.target === canvasRef.current || (e.target as Element).tagName === 'rect' || (e.target as Element).tagName === 'path') {
+      setIsPanning(true);
+      setPanStart({ x: e.clientX, y: e.clientY });
+    }
+  };
+
+  const getAllDescendants = (nodeId: string): string[] => {
+    const descendants: string[] = [];
+    const node = findNode(nodeId);
+    if (!node) return descendants;
+    
+    const collectDescendants = (currentId: string) => {
+      const current = findNode(currentId);
+      if (current && current.children) {
+        current.children.forEach(childId => {
+          descendants.push(childId);
+          collectDescendants(childId);
+        });
+      }
+    };
+    
+    collectDescendants(nodeId);
+    return descendants;
+  };
+
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (draggedNode && canvasRef.current) {
       const rect = canvasRef.current.getBoundingClientRect();
       const newX = (e.clientX - rect.left) / zoom - panOffset.x - dragOffset.x;
       const newY = (e.clientY - rect.top) / zoom - panOffset.y - dragOffset.y;
       
-      setNodes(prev => prev.map(node =>
-        node.id === draggedNode
-          ? { ...node, x: newX, y: newY }
-          : node
-      ));
+      // Get current dragged node position
+      const currentNode = nodes.find(n => n.id === draggedNode);
+      if (currentNode) {
+        const deltaX = newX - currentNode.x;
+        const deltaY = newY - currentNode.y;
+        
+        // Get all descendants of the dragged node
+        const descendants = getAllDescendants(draggedNode);
+        
+        setNodes(prev => prev.map(node => {
+          if (node.id === draggedNode) {
+            return { ...node, x: newX, y: newY };
+          } else if (descendants.includes(node.id)) {
+            // Move descendants by the same delta
+            return { ...node, x: node.x + deltaX, y: node.y + deltaY };
+          }
+          return node;
+        }));
+      }
     } else if (isPanning) {
+      const dx = e.clientX - panStart.x;
+      const dy = e.clientY - panStart.y;
+      
       setPanOffset(prev => ({
-        x: prev.x + e.movementX / zoom,
-        y: prev.y + e.movementY / zoom
+        x: prev.x + dx / zoom,
+        y: prev.y + dy / zoom
       }));
+      
+      setPanStart({ x: e.clientX, y: e.clientY });
     }
-  }, [draggedNode, isPanning, dragOffset, zoom, panOffset]);
+  }, [draggedNode, isPanning, dragOffset, zoom, panOffset, panStart, nodes]);
 
   const handleMouseUp = useCallback(() => {
     setDraggedNode(null);
@@ -368,42 +546,21 @@ const App = () => {
   }, [handleMouseMove, handleMouseUp]);
 
   const getConnectionPoints = (parentNode: Node, childNode: Node) => {
-    const parentCenterX = parentNode.x + 250;
-    const parentCenterY = parentNode.y + (parentNode.isExpanded ? 250 : 70);
-    const childCenterX = childNode.x + 250;
-    const childCenterY = childNode.y + (childNode.isExpanded ? 250 : 70);
+    const parentW = 480;
+    const parentH = parentNode.isExpanded ? 500 : 140;
+    const childW = 480;
+    const childH = childNode.isExpanded ? 500 : 140;
 
-    // Calculate connection points on node edges
-    const dx = childCenterX - parentCenterX;
-    const dy = childCenterY - parentCenterY;
-    
-    // Parent connection point (right side)
-    let parentX = parentNode.x + 480;
-    let parentY = parentCenterY;
-    
-    // Child connection point (left side)
-    let childX = childNode.x;
-    let childY = childCenterY;
+    const parentCenterX = parentNode.x + parentW / 2;
+    const childCenterX = childNode.x + childW / 2;
 
-    // Adjust for different orientations
-    if (dx < 0) { // Child is to the left of parent
-      parentX = parentNode.x;
-      childX = childNode.x + 480;
-    }
-    
-    if (Math.abs(dy) > Math.abs(dx)) { // More vertical than horizontal
-      if (dy > 0) { // Child below parent
-        parentX = parentCenterX;
-        parentY = parentNode.y + (parentNode.isExpanded ? 500 : 140);
-        childX = childCenterX;
-        childY = childNode.y;
-      } else { // Child above parent
-        parentX = parentCenterX;
-        parentY = parentNode.y;
-        childX = childCenterX;
-        childY = childNode.y + (childNode.isExpanded ? 500 : 140);
-      }
-    }
+    // Parent connects from bottom center
+    const parentX = parentCenterX;
+    const parentY = parentNode.y + parentH;
+
+    // Child connects from top center
+    const childX = childCenterX;
+    const childY = childNode.y;
 
     return { parentX, parentY, childX, childY };
   };
@@ -415,35 +572,37 @@ const App = () => {
 
     const { parentX, parentY, childX, childY } = getConnectionPoints(parentNode, childNode);
     
-    // Create a smooth curved path
-    const midX = (parentX + childX) / 2;
-    const controlOffset = Math.min(100, Math.abs(childX - parentX) / 3);
-    
-    const path = `M ${parentX} ${parentY} C ${parentX + controlOffset} ${parentY}, ${childX - controlOffset} ${childY}, ${childX} ${childY}`;
+    // Simple vertical curve
+    const midY = (parentY + childY) / 2;
+    const path = `M ${parentX} ${parentY} C ${parentX} ${midY}, ${childX} ${midY}, ${childX} ${childY}`;
 
     return (
       <g key={`${parent}-${child}`}>
         <defs>
-          <linearGradient id={`gradient-${parent}-${child}`} x1="0%" y1="0%" x2="100%" y2="0%">
+          <linearGradient id={`gradient-${parent}-${child}`} x1="0%" y1="0%" x2="0%" y2="100%">
             <stop offset="0%" stopColor="#6366f1" />
             <stop offset="100%" stopColor="#8b5cf6" />
           </linearGradient>
+          <marker
+            id={`arrow-${parent}-${child}`}
+            viewBox="0 0 10 10"
+            refX="5"
+            refY="5"
+            markerWidth="6"
+            markerHeight="6"
+            orient="auto"
+          >
+            <path d="M0,0 L10,5 L0,10 L3,5 z" fill="#6366f1" />
+          </marker>
         </defs>
         <path
           d={path}
           stroke={`url(#gradient-${parent}-${child})`}
-          strokeWidth="2"
+          strokeWidth="3"
           fill="none"
-          opacity="0.7"
-          markerEnd="url(#arrowhead)"
-          className="transition-all duration-300"
-        />
-        <circle
-          cx={midX}
-          cy={(parentY + childY) / 2}
-          r="2"
-          fill="#6366f1"
-          opacity="0.6"
+          opacity="0.8"
+          markerEnd={`url(#arrow-${parent}-${child})`}
+          style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.1))' }}
         />
       </g>
     );
@@ -455,30 +614,29 @@ const App = () => {
     <div className="h-screen bg-slate-50 relative overflow-hidden">
       <svg
         ref={canvasRef}
-        className="w-full h-full cursor-grab transition-all duration-200"
-        onMouseDown={(e) => {
-          if (e.target === e.currentTarget) {
-            setIsPanning(true);
+        className="w-full h-full cursor-grab"
+        onMouseDown={handleCanvasMouseDown}
+        onWheel={(e) => {
+          e.preventDefault();
+          if (!canvasRef.current) return;
+          const rect = canvasRef.current.getBoundingClientRect();
+          const mouseX = (e.clientX - rect.left) / zoom - panOffset.x;
+          const mouseY = (e.clientY - rect.top) / zoom - panOffset.y;
+          
+          // Reduced zoom speed - smaller multiplier for smoother zooming
+          const zoomFactor = e.deltaY > 0 ? 0.97 : 1.03;
+          const newZoom = Math.max(0.2, Math.min(3, zoom * zoomFactor));
+          
+          if (newZoom !== zoom) {
+            const newPanX = panOffset.x - (mouseX * (newZoom - zoom)) / newZoom;
+            const newPanY = panOffset.y - (mouseY * (newZoom - zoom)) / newZoom;
+            
+            setZoom(newZoom);
+            setPanOffset({ x: newPanX, y: newPanY });
           }
         }}
         style={{ cursor: isPanning ? 'grabbing' : 'grab' }}
       >
-        <defs>
-          <marker
-            id="arrowhead"
-            markerWidth="10"
-            markerHeight="7"
-            refX="9"
-            refY="3.5"
-            orient="auto"
-          >
-            <polygon
-              points="0 0, 10 3.5, 0 7"
-              fill="#6366f1"
-            />
-          </marker>
-        </defs>
-        
         <g transform={`translate(${panOffset.x * zoom},${panOffset.y * zoom}) scale(${zoom})`}>
           {/* Subtle grid */}
           <defs>
@@ -504,17 +662,11 @@ const App = () => {
                 onMouseDown={(e) => handleMouseDown(e, node.id)}
                 className="cursor-move"
               >
-                <div className={`bg-white rounded-xl shadow-lg border-2 h-full flex flex-col transition-all duration-300 ${
-                  node.isExpanded ? 'border-indigo-300 shadow-xl' : 'border-slate-200'
-                }`} 
-                style={{ 
-                  boxShadow: node.isExpanded 
-                    ? '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)' 
-                    : '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-                  transform: node.isExpanded ? 'scale(1)' : 'scale(0.98)'
-                }}>
+                <div className={`bg-white rounded-xl shadow-lg border h-full flex flex-col transition-all duration-300 ${
+                  node.isExpanded ? 'border-slate-300 shadow-xl' : 'border-slate-200'
+                }`}>
                   {/* Header */}
-                  <div className="p-4 bg-gradient-to-r from-slate-50 to-slate-100 rounded-t-xl border-b border-slate-200 flex justify-between items-center cursor-move">
+                  <div className="p-4 bg-slate-50 rounded-t-xl border-b border-slate-200 flex justify-between items-center cursor-move">
                     <div className="flex items-center gap-3">
                       <Move className="w-4 h-4 text-slate-400" />
                       <span className="font-medium text-slate-700 truncate max-w-48">{node.title}</span>
@@ -558,56 +710,74 @@ const App = () => {
                   {node.isExpanded ? (
                     <>
                       {/* Full Chat Interface */}
-                      <div className="flex-1 overflow-y-auto p-4 space-y-4 chat-content">
+                      <div 
+                        ref={(el) => { chatScrollRefs.current[node.id] = el; }}
+                        className="flex-1 overflow-y-auto p-4 space-y-3 chat-content scroll-smooth"
+                      >
                         {node.messages.map((msg, idx) => (
-                          <div key={idx} className="relative">
-                            <div className={`p-4 rounded-xl transition-all duration-200 ${
-                              msg.role === 'user' 
-                                ? 'bg-indigo-500 text-white ml-auto max-w-[80%] shadow-sm' 
-                                : msg.role === 'system'
-                                ? 'bg-amber-50 text-amber-800 border border-amber-200 text-sm italic max-w-[85%] shadow-sm'
-                                : 'bg-slate-100 text-slate-800 max-w-[85%] shadow-sm hover:shadow-md'
-                            }`}>
-                              <div
-                                className={msg.role === 'assistant' ? 'selectable-message select-text cursor-text' : ''}
-                                onMouseUp={() => msg.role === 'assistant' && handleTextSelection(node.id, idx)}
-                              >
-                                {msg.content}
+                          <div key={idx}>
+                            {msg.role === 'user' ? (
+                              <div className="flex justify-end mb-2">
+                                <div className="bg-indigo-600 text-white px-4 py-2 rounded-2xl rounded-tr-sm max-w-[75%] shadow-sm">
+                                  {msg.content}
+                                </div>
                               </div>
-                            </div>
+                            ) : msg.role === 'system' ? (
+                              <div className="flex justify-center mb-2">
+                                <div className="bg-amber-100 text-amber-800 px-3 py-1 rounded-full text-xs">
+                                  {msg.content}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="mb-2">
+                                <div className="flex items-start gap-2">
+                                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xs font-semibold flex-shrink-0 mt-1">
+                                    AI
+                                  </div>
+                                  <div className="flex-1">
+                                    <div 
+                                      className="bg-slate-50 text-slate-800 px-4 py-3 rounded-2xl rounded-tl-sm border border-slate-200 selectable-message select-text cursor-text"
+                                      onMouseUp={() => handleTextSelection(node.id, idx)}
+                                    >
+                                      {msg.content}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         ))}
                         
                         {isProcessing[node.id] && (
-                          <div className="flex items-center gap-3 text-indigo-600 p-4 bg-indigo-50 rounded-xl">
-                            <Zap className="w-4 h-4 animate-pulse" />
-                            <span className="text-sm">Thinking...</span>
-                            <div className="flex gap-1">
-                              <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce"></div>
-                              <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
-                              <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+                          <div className="flex items-start gap-2">
+                            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xs font-semibold flex-shrink-0">
+                              AI
+                            </div>
+                            <div className="bg-slate-50 px-4 py-3 rounded-2xl rounded-tl-sm border border-slate-200 flex items-center gap-2">
+                              <Loader2 className="w-4 h-4 text-indigo-600 animate-spin" />
+                              <span className="text-sm text-slate-600">Thinking...</span>
                             </div>
                           </div>
                         )}
                       </div>
 
                       {/* Input Area */}
-                      <div className="p-4 border-t border-slate-200 chat-content">
-                        <div className="flex items-center gap-3 mb-3">
+                      <div className="p-4 border-t border-slate-200 chat-content bg-white rounded-b-xl">
+                        <div className="flex items-center gap-2 mb-3">
                           <div className="relative model-selector">
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setShowModelSelector(prev => ({ ...prev, [node.id]: !prev[node.id] }));
                               }}
-                              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-200 ${getModelInfo(node.model).color} hover:shadow-sm`}
+                              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-all duration-200 ${getModelInfo(node.model).color} hover:shadow-sm`}
                             >
                               <span className="font-medium">{getModelInfo(node.model).short}</span>
                               <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${showModelSelector[node.id] ? 'rotate-180' : ''}`} />
                             </button>
                             
                             {showModelSelector[node.id] && (
-                              <div className="absolute bottom-full mb-2 left-0 bg-white border border-slate-200 rounded-lg shadow-lg z-10 min-w-48 animate-in slide-in-from-bottom-2 duration-200">
+                              <div className="absolute bottom-full mb-2 left-0 bg-white border border-slate-200 rounded-lg shadow-xl z-10 min-w-48">
                                 {models.map((model) => (
                                   <button
                                     key={model.id}
@@ -629,7 +799,7 @@ const App = () => {
                             )}
                           </div>
                         </div>
-                        <div className="flex gap-3">
+                        <div className="flex gap-2">
                           <input
                             type="text"
                             value={inputValues[node.id] || ''}
@@ -637,15 +807,15 @@ const App = () => {
                               ...prev, 
                               [node.id]: e.target.value 
                             }))}
-                            onKeyPress={(e: React.KeyboardEvent) => e.key === 'Enter' && sendMessage(node.id)}
-                            placeholder="Type your message..."
-                            className="flex-1 px-4 py-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200"
+                            onKeyPress={(e) => e.key === 'Enter' && sendMessage(node.id)}
+                            placeholder="Ask anything..."
+                            className="flex-1 px-4 py-2.5 bg-slate-100 border-0 rounded-full focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all duration-200"
                             disabled={isProcessing[node.id]}
                           />
                           <button
                             onClick={() => sendMessage(node.id)}
                             disabled={isProcessing[node.id]}
-                            className="px-4 py-3 bg-indigo-500 text-white rounded-xl hover:bg-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 hover:shadow-md"
+                            className="px-4 py-2.5 bg-indigo-600 text-white rounded-full hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 hover:shadow-md"
                           >
                             <Send className="w-4 h-4" />
                           </button>
@@ -655,24 +825,24 @@ const App = () => {
                   ) : (
                     /* Collapsed View */
                     <div className="flex-1 p-4 overflow-hidden cursor-move">
-                      <div className="space-y-3">
+                      <div className="space-y-2">
                         {node.messages.slice(-2).map((msg, idx) => (
                           <div
                             key={idx}
-                            className={`p-3 rounded-lg text-sm transition-all duration-200 ${
+                            className={`p-2.5 rounded-lg text-sm ${
                               msg.role === 'user' 
                                 ? 'bg-indigo-100 text-indigo-800' 
                                 : msg.role === 'system'
-                                ? 'bg-amber-100 text-amber-700'
+                                ? 'bg-amber-100 text-amber-700 text-xs'
                                 : 'bg-slate-100 text-slate-700'
                             }`}
                           >
-                            {msg.content.length > 120 ? msg.content.slice(0, 120) + '...' : msg.content}
+                            {msg.content.length > 100 ? msg.content.slice(0, 100) + '...' : msg.content}
                           </div>
                         ))}
                         {node.messages.length > 2 && (
                           <div className="text-slate-500 text-center text-xs">
-                            +{node.messages.length - 2} more messages
+                            +{node.messages.length - 2} more
                           </div>
                         )}
                       </div>
@@ -712,7 +882,9 @@ const App = () => {
           <button
             onClick={(e) => {
               e.stopPropagation();
-              createBranchFromText(selectedText.nodeId!, selectedText.messageIndex!, selectedText.text!);
+              if (selectedText.nodeId && selectedText.messageIndex !== undefined && selectedText.text) {
+                createBranchFromText(selectedText.nodeId, selectedText.messageIndex, selectedText.text);
+              }
             }}
             className="branch-button bg-indigo-700 hover:bg-indigo-800 px-3 py-1 rounded-lg text-sm font-medium transition-colors duration-200"
           >
@@ -724,4 +896,4 @@ const App = () => {
   );
 };
 
-export default App;
+export default CanvasChatApp;
