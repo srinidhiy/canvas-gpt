@@ -1,8 +1,15 @@
-import React from 'react';
+import AuthGate from './components/auth/AuthGate';
 import CanvasChatApp from './components/canvas/CanvasChatApp';
+import { SupabaseAuthProvider } from './contexts/SupabaseAuthContext';
 
 const App = () => {
-  return <CanvasChatApp />;
+  return (
+    <SupabaseAuthProvider>
+      <AuthGate>
+        <CanvasChatApp />
+      </AuthGate>
+    </SupabaseAuthProvider>
+  );
 };
 
 export default App;

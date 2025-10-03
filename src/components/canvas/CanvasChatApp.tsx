@@ -4,6 +4,8 @@ import CanvasStage from './CanvasStage';
 import CanvasControls from './CanvasControls';
 import BranchSelectionBanner from './BranchSelectionBanner';
 import { MODELS } from '../../constants/models';
+import { useSupabaseAuth } from '../../contexts/SupabaseAuthContext';
+import { supabase } from '../../lib/supabaseClient';
 import {
   CanvasNode,
   DragOffset,
@@ -78,6 +80,7 @@ const repositionChildren = (nodes: CanvasNode[], parentId: string): CanvasNode[]
 };
 
 const CanvasChatApp: React.FC = () => {
+  const { user } = useSupabaseAuth();
   const [nodes, setNodes] = useState<CanvasNode[]>(createInitialNodes);
   const [draggedNode, setDraggedNode] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<DragOffset>({ x: 0, y: 0 });
@@ -89,9 +92,14 @@ const CanvasChatApp: React.FC = () => {
   const [selectedText, setSelectedText] = useState<SelectedText>({});
   const [isProcessing, setIsProcessing] = useState<Record<string, boolean>>({});
   const [showModelSelector, setShowModelSelector] = useState<Record<string, boolean>>({});
+  const [hasLoadedFromSupabase, setHasLoadedFromSupabase] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
 
   const canvasRef = useRef<SVGSVGElement>(null);
   const chatScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const findNode = useCallback(
     (nodeId: string) => nodes.find((node) => node.id === nodeId),
@@ -142,6 +150,124 @@ const CanvasChatApp: React.FC = () => {
       }
     }, 10);
   }, []);
+
+  useEffect(() => {
+    let isActive = true;
+
+    setHasLoadedFromSupabase(false);
+    setSyncError(null);
+    setLastSavedAt(null);
+
+    if (!user) {
+      setNodes(createInitialNodes());
+      setIsSyncing(false);
+      return;
+    }
+
+    const loadNodes = async () => {
+      setIsSyncing(true);
+      const { data, error } = await supabase
+        .from('canvas_states')
+        .select('nodes')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (!isActive) {
+        return;
+      }
+
+      if (error) {
+        setSyncError(error.message);
+        setNodes(createInitialNodes());
+      } else if (Array.isArray(data?.nodes)) {
+        setNodes(data.nodes as CanvasNode[]);
+      } else {
+        const defaultNodes = createInitialNodes();
+        setNodes(defaultNodes);
+        const { error: upsertError } = await supabase
+          .from('canvas_states')
+          .upsert(
+            { user_id: user.id, nodes: defaultNodes, updated_at: new Date().toISOString() },
+            { onConflict: 'user_id' }
+          );
+        if (upsertError) {
+          setSyncError(upsertError.message);
+        }
+      }
+
+      if (isActive) {
+        setHasLoadedFromSupabase(true);
+        setIsSyncing(false);
+      }
+    };
+
+    loadNodes();
+
+    return () => {
+      isActive = false;
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
+    };
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !hasLoadedFromSupabase) {
+      return;
+    }
+
+    let isActive = true;
+
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
+
+    saveTimeoutRef.current = setTimeout(async () => {
+      setIsSyncing(true);
+      try {
+        const { error } = await supabase
+          .from('canvas_states')
+          .upsert(
+            { user_id: user.id, nodes, updated_at: new Date().toISOString() },
+            { onConflict: 'user_id' }
+          );
+
+        if (!isActive) {
+          return;
+        }
+
+        if (error) {
+          setSyncError(error.message);
+        } else {
+          setSyncError(null);
+          setLastSavedAt(new Date());
+        }
+      } catch (saveError: unknown) {
+        if (!isActive) {
+          return;
+        }
+        setSyncError(
+          saveError instanceof Error ? saveError.message : 'Failed to save conversation.'
+        );
+      } finally {
+        if (!isActive) {
+          return;
+        }
+        setIsSyncing(false);
+        saveTimeoutRef.current = null;
+      }
+    }, 600);
+
+    return () => {
+      isActive = false;
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
+    };
+  }, [nodes, user, hasLoadedFromSupabase]);
 
   useEffect(() => {
     const handleGlobalClick = (event: MouseEvent) => {
@@ -407,44 +533,87 @@ const CanvasChatApp: React.FC = () => {
     }
   };
 
+  const handleSignOut = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (error) {
+      console.error('Failed to sign out:', error);
+    }
+  };
+
+  const statusText = (() => {
+    if (!hasLoadedFromSupabase) {
+      return 'Loading conversation…';
+    }
+    if (isSyncing) {
+      return 'Saving…';
+    }
+    if (lastSavedAt) {
+      return `Last saved at ${lastSavedAt.toLocaleTimeString()}`;
+    }
+    return 'All changes saved';
+  })();
+
+  const statusMessage = syncError ? `Save failed: ${syncError}` : statusText;
+  const statusClass = syncError ? 'text-rose-600' : 'text-slate-500';
+
   return (
-    <div className="h-screen bg-slate-50 relative overflow-hidden">
-      <CanvasStage
-        nodes={nodes}
-        models={MODELS}
-        zoom={zoom}
-        panOffset={panOffset}
-        isPanning={isPanning}
-        canvasRef={canvasRef}
-        chatScrollRefs={chatScrollRefs}
-        inputValues={inputValues}
-        isProcessing={isProcessing}
-        showModelSelector={showModelSelector}
-        onCanvasMouseDown={handleCanvasMouseDown}
-        onCanvasWheel={handleCanvasWheel}
-        onNodeMouseDown={handleMouseDown}
-        onToggleNodeExpansion={toggleNodeExpansion}
-        onCreateBranch={createBranch}
-        onDeleteNode={deleteNode}
-        onToggleModelSelector={toggleModelSelector}
-        onUpdateModel={updateNodeModel}
-        onInputChange={(nodeId, value) =>
-          setInputValues((prev) => ({
-            ...prev,
-            [nodeId]: value
-          }))
-        }
-        onSendMessage={sendMessage}
-        onTextSelection={handleTextSelection}
-      />
+    <div className="h-screen flex flex-col bg-slate-50">
+      <header className="flex items-center justify-between px-6 py-3 border-b border-slate-200 bg-white shadow-sm z-10">
+        <div>
+          <span className="block text-lg font-semibold text-slate-900">Canvas GPT</span>
+          <span className={`block text-xs ${statusClass}`}>{statusMessage}</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-slate-600">{user?.email}</span>
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 transition"
+          >
+            Sign out
+          </button>
+        </div>
+      </header>
 
-      <CanvasControls
-        zoom={zoom}
-        onZoomIn={() => setZoom((prev) => Math.min(prev * 1.2, 3))}
-        onZoomOut={() => setZoom((prev) => Math.max(prev / 1.2, 0.3))}
-      />
+      <div className="relative flex-1 overflow-hidden">
+        <CanvasStage
+          nodes={nodes}
+          models={MODELS}
+          zoom={zoom}
+          panOffset={panOffset}
+          isPanning={isPanning}
+          canvasRef={canvasRef}
+          chatScrollRefs={chatScrollRefs}
+          inputValues={inputValues}
+          isProcessing={isProcessing}
+          showModelSelector={showModelSelector}
+          onCanvasMouseDown={handleCanvasMouseDown}
+          onCanvasWheel={handleCanvasWheel}
+          onNodeMouseDown={handleMouseDown}
+          onToggleNodeExpansion={toggleNodeExpansion}
+          onCreateBranch={createBranch}
+          onDeleteNode={deleteNode}
+          onToggleModelSelector={toggleModelSelector}
+          onUpdateModel={updateNodeModel}
+          onInputChange={(nodeId, value) =>
+            setInputValues((prev) => ({
+              ...prev,
+              [nodeId]: value
+            }))
+          }
+          onSendMessage={sendMessage}
+          onTextSelection={handleTextSelection}
+        />
 
-      <BranchSelectionBanner selectedText={selectedText} onCreateBranch={handleBranchFromBanner} />
+        <CanvasControls
+          zoom={zoom}
+          onZoomIn={() => setZoom((prev) => Math.min(prev * 1.2, 3))}
+          onZoomOut={() => setZoom((prev) => Math.max(prev / 1.2, 0.3))}
+        />
+
+        <BranchSelectionBanner selectedText={selectedText} onCreateBranch={handleBranchFromBanner} />
+      </div>
     </div>
   );
 };
