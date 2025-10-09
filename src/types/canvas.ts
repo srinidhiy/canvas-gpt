@@ -16,6 +16,8 @@ export interface CanvasNode {
   title: string;
   isExpanded: boolean;
   model: string;
+  systemPrompt: string;
+  context: string;
 }
 
 export interface Model {

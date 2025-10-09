@@ -6,6 +6,7 @@ import BranchSelectionBanner from './BranchSelectionBanner';
 import { MODELS } from '../../constants/models';
 import { useSupabaseAuth } from '../../contexts/SupabaseAuthContext';
 import { supabase } from '../../lib/supabaseClient';
+import { requestAIResponse } from '../../services/aiProvider';
 import {
   CanvasNode,
   DragOffset,
@@ -16,10 +17,21 @@ import {
 import {
   HORIZONTAL_SPACING,
   NODE_WIDTH,
+  VERTICAL_OFFSET,
   calculateChildLayout,
-  createBranchTitle,
-  simulateAIResponse
+  createBranchTitle
 } from '../../utils/canvas';
+
+type StoredCanvasNode = Omit<CanvasNode, 'systemPrompt' | 'context'> & {
+  systemPrompt?: string;
+  context?: string;
+};
+
+const withNodeDefaults = (node: StoredCanvasNode): CanvasNode => ({
+  ...node,
+  systemPrompt: node.systemPrompt ?? '',
+  context: node.context ?? ''
+});
 
 const createInitialNodes = (): CanvasNode[] => [
   {
@@ -37,8 +49,10 @@ const createInitialNodes = (): CanvasNode[] => [
     parent: null,
     isActive: true,
     title: 'Main Thread',
-    isExpanded: false,
-    model: 'claude-sonnet-4'
+    isExpanded: true,
+    model: 'claude-3-5-sonnet-latest',
+    systemPrompt: '',
+    context: ''
   }
 ];
 
@@ -128,6 +142,18 @@ const CanvasChatApp: React.FC = () => {
     setShowModelSelector((prev) => ({ ...prev, [nodeId]: false }));
   };
 
+  const updateNodeSystemPrompt = (nodeId: string, prompt: string) => {
+    setNodes((prev) =>
+      prev.map((node) => (node.id === nodeId ? { ...node, systemPrompt: prompt } : node))
+    );
+  };
+
+  const updateNodeContext = (nodeId: string, value: string) => {
+    setNodes((prev) =>
+      prev.map((node) => (node.id === nodeId ? { ...node, context: value } : node))
+    );
+  };
+
   const toggleNodeExpansion = (nodeId: string) => {
     setNodes((prev) =>
       prev.map((node) => (node.id === nodeId ? { ...node, isExpanded: !node.isExpanded } : node))
@@ -180,7 +206,8 @@ const CanvasChatApp: React.FC = () => {
         setSyncError(error.message);
         setNodes(createInitialNodes());
       } else if (Array.isArray(data?.nodes)) {
-        setNodes(data.nodes as CanvasNode[]);
+        const storedNodes = data.nodes as StoredCanvasNode[];
+        setNodes(storedNodes.map(withNodeDefaults));
       } else {
         const defaultNodes = createInitialNodes();
         setNodes(defaultNodes);
@@ -310,15 +337,17 @@ const CanvasChatApp: React.FC = () => {
 
     const newNode: CanvasNode = {
       id: newNodeId,
-      x: 0,
-      y: 0,
+      x: parent.x,
+      y: parent.y + VERTICAL_OFFSET,
       messages: [contextMessage],
       children: [],
       parent: parentId,
       isActive: true,
       title: branchTitle,
       isExpanded: true,
-      model: parent.model
+      model: parent.model,
+      systemPrompt: parent.systemPrompt,
+      context: parent.context
     };
 
     setNodes((prev) => {
@@ -345,8 +374,8 @@ const CanvasChatApp: React.FC = () => {
 
     const newNode: CanvasNode = {
       id: newNodeId,
-      x: 0,
-      y: 0,
+      x: parent.x,
+      y: parent.y + VERTICAL_OFFSET,
       messages: [
         { role: 'assistant', content: 'New conversation branch started. What would you like to explore?' }
       ],
@@ -355,7 +384,9 @@ const CanvasChatApp: React.FC = () => {
       isActive: true,
       title: `Branch ${branchNumber}`,
       isExpanded: true,
-      model: parent.model
+      model: parent.model,
+      systemPrompt: parent.systemPrompt,
+      context: parent.context
     };
 
     setNodes((prev) => {
@@ -394,24 +425,50 @@ const CanvasChatApp: React.FC = () => {
   };
 
   const sendMessage = async (nodeId: string) => {
-    const inputValue = inputValues[nodeId] || '';
-    if (!inputValue.trim()) return;
+    const rawInput = inputValues[nodeId] ?? '';
+    const trimmed = rawInput.trim();
+
+    if (!trimmed || isProcessing[nodeId]) {
+      return;
+    }
 
     const node = findNode(nodeId);
-    const userMessage: Message = { role: 'user', content: inputValue };
+    if (!node) {
+      return;
+    }
+
+    const userMessage: Message = { role: 'user', content: trimmed };
+    const systemMessages: Message[] = [];
+
+    if (node.systemPrompt.trim()) {
+      systemMessages.push({ role: 'system', content: node.systemPrompt.trim() });
+    }
+
+    if (node.context.trim()) {
+      systemMessages.push({ role: 'system', content: node.context.trim() });
+    }
+
+    const conversation = [...systemMessages, ...node.messages, userMessage];
+
     addMessage(nodeId, userMessage);
 
     setInputValues((prev) => ({ ...prev, [nodeId]: '' }));
     setIsProcessing((prev) => ({ ...prev, [nodeId]: true }));
 
-    setTimeout(() => {
-      const aiResponse: Message = {
-        role: 'assistant',
-        content: simulateAIResponse(node?.model || 'claude-sonnet-4')
-      };
-      addMessage(nodeId, aiResponse);
+    try {
+      const aiContent = await requestAIResponse({
+        model: node.model,
+        messages: conversation
+      });
+      addMessage(nodeId, { role: 'assistant', content: aiContent });
+    } catch (error) {
+      console.error('AI response error', error);
+      const fallbackMessage =
+        error instanceof Error ? error.message : 'Unexpected error while generating a response.';
+      addMessage(nodeId, { role: 'assistant', content: `Error: ${fallbackMessage}` });
+    } finally {
       setIsProcessing((prev) => ({ ...prev, [nodeId]: false }));
-    }, 1200);
+    }
   };
 
   const handleMouseDown = (event: React.MouseEvent<SVGForeignObjectElement, MouseEvent>, nodeId: string) => {
@@ -419,6 +476,7 @@ const CanvasChatApp: React.FC = () => {
     if (
       target.closest('.chat-content') ||
       target.closest('input') ||
+      target.closest('textarea') ||
       target.closest('button') ||
       target.closest('.model-selector')
     ) {
@@ -504,6 +562,11 @@ const CanvasChatApp: React.FC = () => {
   }, [handleMouseMove, handleMouseUp]);
 
   const handleCanvasWheel = (event: React.WheelEvent<SVGSVGElement>) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('.chat-scrollable') || target?.closest('textarea')) {
+      return;
+    }
+
     event.preventDefault();
     if (!canvasRef.current) return;
 
@@ -561,8 +624,8 @@ const CanvasChatApp: React.FC = () => {
     <div className="h-screen flex flex-col bg-slate-50">
       <header className="flex items-center justify-between px-6 py-3 border-b border-slate-200 bg-white shadow-sm z-10">
         <div>
-          <span className="block text-lg font-semibold text-slate-900">Canvas GPT</span>
-          <span className={`block text-xs ${statusClass}`}>{statusMessage}</span>
+          <span className="block text-xl font-semibold text-slate-900">Canvas GPT</span>
+          <span className={`block text-sm ${statusClass}`}>{statusMessage}</span>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-sm text-slate-600">{user?.email}</span>
@@ -596,6 +659,8 @@ const CanvasChatApp: React.FC = () => {
           onDeleteNode={deleteNode}
           onToggleModelSelector={toggleModelSelector}
           onUpdateModel={updateNodeModel}
+          onUpdateSystemPrompt={updateNodeSystemPrompt}
+          onUpdateContext={updateNodeContext}
           onInputChange={(nodeId, value) =>
             setInputValues((prev) => ({
               ...prev,

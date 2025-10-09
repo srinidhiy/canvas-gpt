@@ -93,3 +93,28 @@ create policy "Individuals can manage their canvas"
 4. Run the app with `npm run dev` – you will see an authentication screen. After signing in, your canvas is stored in Supabase and automatically synced.
 
 > Tip: if you need to reset your canvas for a user, delete the corresponding row from `public.canvas_states`.
+
+
+## AI Provider Setup
+
+1. Install the [Supabase CLI](https://supabase.com/docs/guides/cli) and sign in to the project that backs this app.
+2. Set the Edge Function secrets so your API keys stay server-side:
+
+```bash
+supabase functions secrets set OPENAI_API_KEY=sk-your-openai-key
+supabase functions secrets set ANTHROPIC_API_KEY=sk-your-anthropic-key
+```
+
+3. Deploy the provided `chat-completion` Edge Function:
+
+```bash
+supabase functions deploy chat-completion
+```
+
+4. When developing locally you can run the function with local environment variables (create `supabase/.env` with the same keys):
+
+```bash
+supabase functions serve chat-completion --env-file supabase/.env
+```
+
+The frontend calls this Edge Function via `supabase.functions.invoke`, routing requests to OpenAI (`gpt-4o`, `gpt-4o mini`) or Anthropic (`claude-3.5-sonnet-latest`, `claude-3-haiku-20240307`) depending on the model a node selects.

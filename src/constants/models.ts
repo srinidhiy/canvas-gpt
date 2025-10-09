@@ -2,31 +2,31 @@ import { Model } from '../types/canvas';
 
 export const MODELS: Model[] = [
   {
-    id: 'claude-sonnet-4',
-    name: 'Claude Sonnet 4',
-    short: 'Sonnet 4',
-    description: 'Balanced performance',
-    color: 'bg-blue-50 text-blue-700'
-  },
-  {
-    id: 'claude-opus-4',
-    name: 'Claude Opus 4',
-    short: 'Opus 4',
-    description: 'Most capable',
+    id: 'claude-3-5-sonnet-latest',
+    name: 'Claude 3.5 Sonnet',
+    short: 'Claude 3.5',
+    description: 'Anthropic flagship reasoning',
     color: 'bg-purple-50 text-purple-700'
   },
   {
-    id: 'gpt-4',
-    name: 'GPT-4',
-    short: 'GPT-4',
-    description: 'OpenAI flagship',
-    color: 'bg-green-50 text-green-700'
+    id: 'claude-3-haiku-20240307',
+    name: 'Claude 3 Haiku',
+    short: 'Claude Haiku',
+    description: 'Fast, cost-effective responses',
+    color: 'bg-amber-50 text-amber-700'
   },
   {
-    id: 'gpt-3.5-turbo',
-    name: 'GPT-3.5 Turbo',
-    short: 'GPT-3.5',
-    description: 'Fast and efficient',
-    color: 'bg-orange-50 text-orange-700'
+    id: 'gpt-4o',
+    name: 'GPT-4o',
+    short: 'GPT-4o',
+    description: 'OpenAI omnidirectional model',
+    color: 'bg-blue-50 text-blue-700'
+  },
+  {
+    id: 'gpt-4o-mini',
+    name: 'GPT-4o mini',
+    short: 'GPT-4o mini',
+    description: 'Fast and capable mini model',
+    color: 'bg-emerald-50 text-emerald-700'
   }
 ];

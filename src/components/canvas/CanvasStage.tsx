@@ -23,6 +23,8 @@ interface CanvasStageProps {
   onDeleteNode: (nodeId: string) => void;
   onToggleModelSelector: (nodeId: string) => void;
   onUpdateModel: (nodeId: string, modelId: string) => void;
+  onUpdateSystemPrompt: (nodeId: string, prompt: string) => void;
+  onUpdateContext: (nodeId: string, value: string) => void;
   onInputChange: (nodeId: string, value: string) => void;
   onSendMessage: (nodeId: string) => void;
   onTextSelection: (nodeId: string, messageIndex: number) => void;
@@ -47,6 +49,8 @@ const CanvasStage: React.FC<CanvasStageProps> = ({
   onDeleteNode,
   onToggleModelSelector,
   onUpdateModel,
+  onUpdateSystemPrompt,
+  onUpdateContext,
   onInputChange,
   onSendMessage,
   onTextSelection
@@ -66,34 +70,16 @@ const CanvasStage: React.FC<CanvasStageProps> = ({
     const path = `M ${parentX} ${parentY} C ${parentX} ${midY}, ${childX} ${midY}, ${childX} ${childY}`;
 
     return (
-      <g key={`${parentId}-${childId}`}>
-        <defs>
-          <linearGradient id={`gradient-${parentId}-${childId}`} x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="#6366f1" />
-            <stop offset="100%" stopColor="#8b5cf6" />
-          </linearGradient>
-          <marker
-            id={`arrow-${parentId}-${childId}`}
-            viewBox="0 0 10 10"
-            refX="5"
-            refY="5"
-            markerWidth="6"
-            markerHeight="6"
-            orient="auto"
-          >
-            <path d="M0,0 L10,5 L0,10 L3,5 z" fill="#6366f1" />
-          </marker>
-        </defs>
-        <path
-          d={path}
-          stroke={`url(#gradient-${parentId}-${childId})`}
-          strokeWidth="3"
-          fill="none"
-          opacity="0.8"
-          markerEnd={`url(#arrow-${parentId}-${childId})`}
-          style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.1))' }}
-        />
-      </g>
+      <path
+        key={`${parentId}-${childId}`}
+        d={path}
+        stroke="url(#connectionGradient)"
+        strokeWidth="3"
+        fill="none"
+        opacity="0.9"
+        markerEnd="url(#connectionArrow)"
+        style={{ filter: 'drop-shadow(0 2px 6px rgba(99,102,241,0.2))' }}
+      />
     );
   };
 
@@ -112,6 +98,21 @@ const CanvasStage: React.FC<CanvasStageProps> = ({
           <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
             <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#e2e8f0" strokeWidth="1" opacity="0.4" />
           </pattern>
+          <linearGradient id="connectionGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stopColor="#6366f1" />
+            <stop offset="100%" stopColor="#8b5cf6" />
+          </linearGradient>
+          <marker
+            id="connectionArrow"
+            viewBox="0 0 10 10"
+            refX="5"
+            refY="5"
+            markerWidth="6"
+            markerHeight="6"
+            orient="auto"
+          >
+            <path d="M0,0 L10,5 L0,10 L3,5 z" fill="#6366f1" />
+          </marker>
         </defs>
         <rect x="-2000" y="-2000" width="4000" height="4000" fill="url(#grid)" />
 
@@ -140,6 +141,10 @@ const CanvasStage: React.FC<CanvasStageProps> = ({
                 onDelete={() => onDeleteNode(node.id)}
                 onToggleModelSelector={() => onToggleModelSelector(node.id)}
                 onSelectModel={(modelId) => onUpdateModel(node.id, modelId)}
+                systemPrompt={node.systemPrompt}
+                context={node.context}
+                onSystemPromptChange={(value) => onUpdateSystemPrompt(node.id, value)}
+                onContextChange={(value) => onUpdateContext(node.id, value)}
                 onInputChange={(value) => onInputChange(node.id, value)}
                 onSend={() => onSendMessage(node.id)}
                 onTextSelection={(messageIndex) => onTextSelection(node.id, messageIndex)}
