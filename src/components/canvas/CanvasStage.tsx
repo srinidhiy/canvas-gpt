@@ -27,7 +27,6 @@ interface CanvasStageProps {
   onUpdateContext: (nodeId: string, value: string) => void;
   onInputChange: (nodeId: string, value: string) => void;
   onSendMessage: (nodeId: string) => void;
-  onTextSelection: (nodeId: string, messageIndex: number) => void;
 }
 
 const CanvasStage: React.FC<CanvasStageProps> = ({
@@ -52,8 +51,7 @@ const CanvasStage: React.FC<CanvasStageProps> = ({
   onUpdateSystemPrompt,
   onUpdateContext,
   onInputChange,
-  onSendMessage,
-  onTextSelection
+  onSendMessage
 }) => {
   const getModelInfo = (modelId: string) => models.find((model) => model.id === modelId) ?? models[0];
 
@@ -127,6 +125,7 @@ const CanvasStage: React.FC<CanvasStageProps> = ({
               height={getNodeHeight(node)}
               onMouseDown={(event) => onNodeMouseDown(event, node.id)}
               className="cursor-move canvas-node"
+              data-node-id={node.id}
             >
               <CanvasNodeCard
                 node={node}
@@ -147,7 +146,6 @@ const CanvasStage: React.FC<CanvasStageProps> = ({
                 onContextChange={(value) => onUpdateContext(node.id, value)}
                 onInputChange={(value) => onInputChange(node.id, value)}
                 onSend={() => onSendMessage(node.id)}
-                onTextSelection={(messageIndex) => onTextSelection(node.id, messageIndex)}
                 chatScrollRef={(element) => {
                   chatScrollRefs.current[node.id] = element;
                 }}

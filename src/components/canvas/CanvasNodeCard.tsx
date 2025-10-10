@@ -22,7 +22,6 @@ interface CanvasNodeCardProps {
   onContextChange: (value: string) => void;
   onInputChange: (value: string) => void;
   onSend: () => void;
-  onTextSelection: (messageIndex: number) => void;
   chatScrollRef: (el: HTMLDivElement | null) => void;
 }
 
@@ -45,7 +44,6 @@ const CanvasNodeCard: React.FC<CanvasNodeCardProps> = ({
   onContextChange,
   onInputChange,
   onSend,
-  onTextSelection,
   chatScrollRef
 }) => {
   const [showContextEditor, setShowContextEditor] = useState(false);
@@ -114,7 +112,7 @@ const CanvasNodeCard: React.FC<CanvasNodeCardProps> = ({
         <>
           <div
             ref={chatScrollRef}
-            className="flex-1 overflow-y-auto px-5 py-6 space-y-5 chat-content chat-scrollable scroll-smooth"
+            className="flex-1 overflow-y-auto px-5 py-6 space-y-5 chat-content chat-scrollable scroll-smooth cursor-default"
           >
             {node.messages.map((msg, idx) => {
               if (msg.role === 'system') {
@@ -138,10 +136,32 @@ const CanvasNodeCard: React.FC<CanvasNodeCardProps> = ({
               }
 
               return (
-                <div key={idx} className="selectable-message">
+                <div key={idx} className="selectable-message" data-node-id={node.id} data-message-index={idx}>
                   <div
-                    className="w-full rounded-2xl border border-slate-200 bg-white/85 px-6 py-[18px] text-base leading-relaxed text-slate-800 shadow-sm backdrop-blur-sm"
-                    onMouseUp={() => onTextSelection(idx)}
+                    className="w-full rounded-2xl border border-slate-200 bg-white/85 px-6 py-[18px] text-base leading-relaxed text-slate-800 shadow-sm backdrop-blur-sm select-text"
+                    onMouseUp={(mouseEvent) => {
+                      mouseEvent.stopPropagation();
+                      
+                      // Small delay to allow selection to complete
+                      setTimeout(() => {
+                        const selection = window.getSelection();
+                        if (selection && selection.rangeCount > 0 && selection.toString().trim()) {
+                          const selectedTextContent = selection.toString().trim();
+                          if (selectedTextContent.length > 3) {
+                            // Dispatch the text selected event
+                            const selectedEvent = new CustomEvent('textSelected', {
+                              detail: {
+                                nodeId: node.id,
+                                messageIndex: idx,
+                                text: selectedTextContent,
+                                range: selection.getRangeAt(0).cloneRange()
+                              }
+                            });
+                            document.dispatchEvent(selectedEvent);
+                          }
+                        }
+                      }, 10);
+                    }}
                   >
                     {msg.content}
                   </div>

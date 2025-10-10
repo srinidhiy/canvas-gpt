@@ -22,7 +22,7 @@ export const getConnectionPoints = (parentNode: CanvasNode, childNode: CanvasNod
   const arrowPadding = 24;
 
   return {
-    parentX: parentCenterX,
+    parentX: parentCenterX-1,
     parentY: parentNode.y + parentHeight - arrowPadding / 2,
     childX: childCenterX,
     childY: childNode.y - arrowPadding

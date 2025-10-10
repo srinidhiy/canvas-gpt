@@ -160,22 +160,6 @@ const CanvasChatApp: React.FC = () => {
     );
   };
 
-  const handleTextSelection = useCallback((nodeId: string, messageIndex: number) => {
-    setTimeout(() => {
-      const selection = window.getSelection();
-      if (selection && selection.rangeCount > 0 && selection.toString().trim()) {
-        const selectedTextContent = selection.toString().trim();
-        if (selectedTextContent.length > 3) {
-          setSelectedText({
-            nodeId,
-            messageIndex,
-            text: selectedTextContent,
-            range: selection.getRangeAt(0).cloneRange()
-          });
-        }
-      }
-    }, 10);
-  }, []);
 
   useEffect(() => {
     let isActive = true;
@@ -297,33 +281,44 @@ const CanvasChatApp: React.FC = () => {
   }, [nodes, user, hasLoadedFromSupabase]);
 
   useEffect(() => {
+    const handleTextSelected = (event: CustomEvent) => {
+      const { nodeId, messageIndex, text, range } = event.detail;
+      setSelectedText({
+        nodeId,
+        messageIndex,
+        text,
+        range
+      });
+    };
+
     const handleGlobalClick = (event: MouseEvent) => {
       const target = event.target as Element;
-      if (!target.closest('.selectable-message') && !target.closest('.branch-button')) {
+      
+      // Only clear selection if clicking outside of messages and not on banner elements
+      if (!target.closest('.selectable-message') && 
+          !target.closest('.branch-button') && 
+          !target.closest('[class*="fixed"]') &&
+          !target.closest('form') &&
+          !target.closest('input') &&
+          !target.closest('button')) {
         setSelectedText({});
       }
+      
       if (!target.closest('.model-selector')) {
         setShowModelSelector({});
       }
     };
 
-    const handleSelectionChange = () => {
-      const selection = window.getSelection();
-      if (selection && (selection.rangeCount === 0 || !selection.toString().trim())) {
-        setSelectedText({});
-      }
-    };
-
-    document.addEventListener('mousedown', handleGlobalClick);
-    document.addEventListener('selectionchange', handleSelectionChange);
+    document.addEventListener('textSelected', handleTextSelected as EventListener);
+    document.addEventListener('click', handleGlobalClick);
 
     return () => {
-      document.removeEventListener('mousedown', handleGlobalClick);
-      document.removeEventListener('selectionchange', handleSelectionChange);
+      document.removeEventListener('textSelected', handleTextSelected as EventListener);
+      document.removeEventListener('click', handleGlobalClick);
     };
   }, []);
 
-  const createBranchFromText = (parentId: string, selectedContent: string) => {
+  const createBranchFromText = (parentId: string, selectedContent: string, query?: string) => {
     const parent = findNode(parentId);
     if (!parent) return;
 
@@ -335,11 +330,21 @@ const CanvasChatApp: React.FC = () => {
       content: `Exploring: "${selectedContent}"`
     };
 
+    const initialMessages: Message[] = [contextMessage];
+    
+    // If there's a query, add it as a user message
+    if (query && query.trim()) {
+      initialMessages.push({
+        role: 'user',
+        content: query.trim()
+      });
+    }
+
     const newNode: CanvasNode = {
       id: newNodeId,
       x: parent.x,
       y: parent.y + VERTICAL_OFFSET,
-      messages: [contextMessage],
+      messages: initialMessages,
       children: [],
       parent: parentId,
       isActive: true,
@@ -362,6 +367,41 @@ const CanvasChatApp: React.FC = () => {
     const selection = window.getSelection();
     if (selection && selection.rangeCount > 0) {
       selection.removeAllRanges();
+    }
+
+    // If there's a query, automatically send it to get an AI response
+    if (query && query.trim()) {
+      // Set processing state for the new node
+      setIsProcessing((prev) => ({ ...prev, [newNodeId]: true }));
+
+      // Prepare the conversation for AI response
+      const systemMessages: Message[] = [];
+      if (newNode.systemPrompt.trim()) {
+        systemMessages.push({ role: 'system', content: newNode.systemPrompt.trim() });
+      }
+      if (newNode.context.trim()) {
+        systemMessages.push({ role: 'system', content: newNode.context.trim() });
+      }
+
+      const conversation = [...systemMessages, ...newNode.messages];
+
+      // Send the query to AI
+      requestAIResponse({
+        model: newNode.model,
+        messages: conversation
+      })
+        .then((aiContent) => {
+          addMessage(newNodeId, { role: 'assistant', content: aiContent });
+        })
+        .catch((error) => {
+          console.error('AI response error', error);
+          const fallbackMessage =
+            error instanceof Error ? error.message : 'Unexpected error while generating a response.';
+          addMessage(newNodeId, { role: 'assistant', content: `Error: ${fallbackMessage}` });
+        })
+        .finally(() => {
+          setIsProcessing((prev) => ({ ...prev, [newNodeId]: false }));
+        });
     }
   };
 
@@ -567,7 +607,7 @@ const CanvasChatApp: React.FC = () => {
       return;
     }
 
-    event.preventDefault();
+    // event.preventDefault();
     if (!canvasRef.current) return;
 
     const rect = canvasRef.current.getBoundingClientRect();
@@ -590,9 +630,9 @@ const CanvasChatApp: React.FC = () => {
     setShowModelSelector((prev) => ({ ...prev, [nodeId]: !prev[nodeId] }));
   };
 
-  const handleBranchFromBanner = () => {
+  const handleBranchFromBanner = (query?: string) => {
     if (selectedText.nodeId && selectedText.text) {
-      createBranchFromText(selectedText.nodeId, selectedText.text);
+      createBranchFromText(selectedText.nodeId, selectedText.text, query);
     }
   };
 
@@ -668,7 +708,6 @@ const CanvasChatApp: React.FC = () => {
             }))
           }
           onSendMessage={sendMessage}
-          onTextSelection={handleTextSelection}
         />
 
         <CanvasControls
