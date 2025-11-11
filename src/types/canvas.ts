@@ -16,8 +16,9 @@ export interface CanvasNode {
   title: string;
   isExpanded: boolean;
   model: string;
-  systemPrompt: string;
-  context: string;
+  summary: string;
+  childInsights: Record<string, string>;
+  knowledgeUpdatedAt: string | null;
 }
 
 export interface Model {

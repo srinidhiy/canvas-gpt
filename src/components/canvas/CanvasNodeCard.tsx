@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { ChevronDown, GitBranch, Loader2, Move, Send, Trash2 } from 'lucide-react';
+import { ChevronDown, Copy, Check, GitBranch, Move, Send, Trash2 } from 'lucide-react';
 
 import { CanvasNode, Model } from '../../types/canvas';
+import ReactMarkdown from 'react-markdown';
 
 interface CanvasNodeCardProps {
   node: CanvasNode;
@@ -11,15 +12,14 @@ interface CanvasNodeCardProps {
   isProcessing: boolean;
   showModelSelector: boolean;
   models: Model[];
-  systemPrompt: string;
-  context: string;
+  summary: string;
+  childInsights: Record<string, string>;
+  knowledgeUpdatedAt: string | null;
   onToggleExpansion: () => void;
   onCreateBranch: () => void;
   onDelete?: () => void;
   onToggleModelSelector: () => void;
   onSelectModel: (modelId: string) => void;
-  onSystemPromptChange: (value: string) => void;
-  onContextChange: (value: string) => void;
   onInputChange: (value: string) => void;
   onSend: () => void;
   chatScrollRef: (el: HTMLDivElement | null) => void;
@@ -33,21 +33,34 @@ const CanvasNodeCard: React.FC<CanvasNodeCardProps> = ({
   isProcessing,
   showModelSelector,
   models,
-  systemPrompt,
-  context,
+  summary,
+  childInsights,
+  knowledgeUpdatedAt,
   onToggleExpansion,
   onCreateBranch,
   onDelete,
   onToggleModelSelector,
   onSelectModel,
-  onSystemPromptChange,
-  onContextChange,
   onInputChange,
   onSend,
   chatScrollRef
 }) => {
-  const [showContextEditor, setShowContextEditor] = useState(false);
-  const hasCustomContext = Boolean(systemPrompt.trim() || context.trim());
+  const [showKnowledgePanel, setShowKnowledgePanel] = useState(false);
+  const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
+  const hasKnowledge = Boolean(summary.trim() || Object.keys(childInsights).length > 0);
+  const knowledgeTimestamp = knowledgeUpdatedAt
+    ? new Date(knowledgeUpdatedAt).toLocaleTimeString()
+    : null;
+
+  const handleCopy = async (content: string, messageIndex: number) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedMessageIndex(messageIndex);
+      setTimeout(() => setCopiedMessageIndex(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy text:', err);
+    }
+  };
 
   return (
     <div
@@ -74,17 +87,24 @@ const CanvasNodeCard: React.FC<CanvasNodeCardProps> = ({
           <button
             onClick={(event) => {
               event.stopPropagation();
-              setShowContextEditor((prev) => !prev);
+              setShowKnowledgePanel((prev) => !prev);
             }}
             className={`px-3 py-1 rounded-lg text-xs transition-colors duration-200 flex items-center gap-1 ${
-              showContextEditor ? 'bg-indigo-100 text-indigo-600' : hasCustomContext ? 'bg-indigo-50 text-indigo-600' : 'text-slate-600 hover:bg-slate-200'
+              showKnowledgePanel
+                ? 'bg-indigo-100 text-indigo-600'
+                : hasKnowledge
+                ? 'bg-indigo-50 text-indigo-600'
+                : 'text-slate-600 hover:bg-slate-200'
             }`}
           >
-            Context
+            Knowledge
             <ChevronDown
-              className={`w-3 h-3 transition-transform duration-200 ${showContextEditor ? 'rotate-180' : ''}`}
+              className={`w-3 h-3 transition-transform duration-200 ${showKnowledgePanel ? 'rotate-180' : ''}`}
             />
           </button>
+          {knowledgeTimestamp && (
+            <span className="text-[10px] text-slate-400">{knowledgeTimestamp}</span>
+          )}
           <button
             onClick={(event) => {
               event.stopPropagation();
@@ -135,10 +155,14 @@ const CanvasNodeCard: React.FC<CanvasNodeCardProps> = ({
                 );
               }
 
+              const isLastMessage = idx === node.messages.length - 1;
+              const isStreaming = isProcessing && isLastMessage && msg.role === 'assistant';
+              const isCopied = copiedMessageIndex === idx;
+
               return (
-                <div key={idx} className="selectable-message" data-node-id={node.id} data-message-index={idx}>
+                <div key={idx} className="selectable-message group relative" data-node-id={node.id} data-message-index={idx}>
                   <div
-                    className="w-full rounded-2xl border border-slate-200 bg-white/85 px-6 py-[18px] text-base leading-relaxed text-slate-800 shadow-sm backdrop-blur-sm select-text"
+                    className="w-full rounded-2xl border border-slate-200 bg-white/85 px-6 py-[18px] text-base leading-relaxed text-slate-800 shadow-sm backdrop-blur-sm select-text prose prose-slate max-w-none prose-headings:text-slate-800 prose-p:text-slate-800 prose-strong:text-slate-900 prose-code:text-indigo-600 prose-code:bg-indigo-50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-slate-100 prose-pre:border prose-pre:border-slate-200"
                     onMouseUp={(mouseEvent) => {
                       mouseEvent.stopPropagation();
                       
@@ -163,18 +187,30 @@ const CanvasNodeCard: React.FC<CanvasNodeCardProps> = ({
                       }, 10);
                     }}
                   >
-                    {msg.content}
+                   <ReactMarkdown>{msg.content}</ReactMarkdown>
+                   {isStreaming && (
+                     <span className="inline-flex items-center ml-1.5">
+                       <span className="inline-block w-0.5 h-4 bg-indigo-400 animate-pulse" />
+                     </span>
+                   )}
                   </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleCopy(msg.content, idx);
+                    }}
+                    className="absolute bottom-3 right-3 p-1.5 rounded-lg bg-white/90 hover:bg-white border border-slate-200 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity duration-200 text-slate-600 hover:text-indigo-600"
+                    title="Copy message"
+                  >
+                    {isCopied ? (
+                      <Check className="w-4 h-4 text-green-600" />
+                    ) : (
+                      <Copy className="w-4 h-4" />
+                    )}
+                  </button>
                 </div>
               );
             })}
-
-            {isProcessing && (
-              <div className="w-full rounded-2xl border border-slate-200 bg-white/85 px-6 py-4 text-base text-slate-600 shadow-sm flex items-center gap-3">
-                <Loader2 className="w-5 h-5 text-indigo-500 animate-spin" />
-                <span>Waiting for model...</span>
-              </div>
-            )}
           </div>
 
           <div className="px-5 py-5 border-t border-slate-200 chat-content bg-white rounded-b-2xl">
@@ -218,28 +254,35 @@ const CanvasNodeCard: React.FC<CanvasNodeCardProps> = ({
               </div>
             </div>
 
-            {showContextEditor && (
-              <div className="space-y-3 mb-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor={`${node.id}-system-prompt`}>System prompt</label>
-                  <textarea
-                    id={`${node.id}-system-prompt`}
-                    value={systemPrompt}
-                    onChange={(event) => onSystemPromptChange(event.target.value)}
-                    onClick={(event) => event.stopPropagation()}
-                    className="w-full rounded-xl border border-slate-300 bg-slate-50/80 px-3 py-2 text-base text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y min-h-[72px]"
-                  />
+            {showKnowledgePanel && (
+              <div className="space-y-4 mb-4">
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Node summary</p>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm leading-relaxed text-slate-700">
+                    {summary.trim()
+                      ? summary
+                      : 'The assistant will summarize this thread after the next response.'}
+                  </div>
                 </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor={`${node.id}-context`}>Conversation context</label>
-                  <textarea
-                    id={`${node.id}-context`}
-                    value={context}
-                    onChange={(event) => onContextChange(event.target.value)}
-                    onClick={(event) => event.stopPropagation()}
-                    className="w-full rounded-xl border border-slate-300 bg-slate-50/80 px-3 py-2 text-base text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y min-h-[72px]"
-                  />
-                </div>
+                {Object.keys(childInsights).length > 0 ? (
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Branch insights</p>
+                    <div className="space-y-2">
+                      {Object.entries(childInsights).map(([childId, insight]) => (
+                        <div
+                          key={childId}
+                          className="rounded-xl border border-indigo-100 bg-indigo-50/70 px-4 py-2 text-sm leading-relaxed text-indigo-900"
+                        >
+                          {insight}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-2 text-xs text-slate-500">
+                    No branch insights yet. Create child nodes to capture discoveries.
+                  </div>
+                )}
               </div>
             )}
 
@@ -266,6 +309,11 @@ const CanvasNodeCard: React.FC<CanvasNodeCardProps> = ({
       ) : (
         <div className="flex-1 p-4 overflow-hidden cursor-move">
           <div className="space-y-2">
+            {summary.trim() && (
+              <div className="p-3 rounded-lg bg-slate-100 text-slate-700 text-sm">
+                {summary.length > 160 ? `${summary.slice(0, 160)}…` : summary}
+              </div>
+            )}
             {node.messages.slice(-2).map((msg, idx) => (
               <div
                 key={idx}

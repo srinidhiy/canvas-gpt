@@ -16,15 +16,12 @@ interface CanvasStageProps {
   isProcessing: Record<string, boolean>;
   showModelSelector: Record<string, boolean>;
   onCanvasMouseDown: (event: React.MouseEvent<SVGSVGElement, MouseEvent>) => void;
-  onCanvasWheel: (event: React.WheelEvent<SVGSVGElement>) => void;
   onNodeMouseDown: (event: React.MouseEvent<SVGForeignObjectElement, MouseEvent>, nodeId: string) => void;
   onToggleNodeExpansion: (nodeId: string) => void;
   onCreateBranch: (nodeId: string) => void;
   onDeleteNode: (nodeId: string) => void;
   onToggleModelSelector: (nodeId: string) => void;
   onUpdateModel: (nodeId: string, modelId: string) => void;
-  onUpdateSystemPrompt: (nodeId: string, prompt: string) => void;
-  onUpdateContext: (nodeId: string, value: string) => void;
   onInputChange: (nodeId: string, value: string) => void;
   onSendMessage: (nodeId: string) => void;
 }
@@ -41,15 +38,12 @@ const CanvasStage: React.FC<CanvasStageProps> = ({
   isProcessing,
   showModelSelector,
   onCanvasMouseDown,
-  onCanvasWheel,
   onNodeMouseDown,
   onToggleNodeExpansion,
   onCreateBranch,
   onDeleteNode,
   onToggleModelSelector,
   onUpdateModel,
-  onUpdateSystemPrompt,
-  onUpdateContext,
   onInputChange,
   onSendMessage
 }) => {
@@ -88,7 +82,6 @@ const CanvasStage: React.FC<CanvasStageProps> = ({
       ref={canvasRef}
       className="w-full h-full cursor-grab"
       onMouseDown={onCanvasMouseDown}
-      onWheel={onCanvasWheel}
       style={{ cursor: isPanning ? 'grabbing' : 'grab' }}
     >
       <g transform={`translate(${panOffset.x * zoom},${panOffset.y * zoom}) scale(${zoom})`}>
@@ -140,10 +133,9 @@ const CanvasStage: React.FC<CanvasStageProps> = ({
                 onDelete={() => onDeleteNode(node.id)}
                 onToggleModelSelector={() => onToggleModelSelector(node.id)}
                 onSelectModel={(modelId) => onUpdateModel(node.id, modelId)}
-                systemPrompt={node.systemPrompt}
-                context={node.context}
-                onSystemPromptChange={(value) => onUpdateSystemPrompt(node.id, value)}
-                onContextChange={(value) => onUpdateContext(node.id, value)}
+                summary={node.summary}
+                childInsights={node.childInsights}
+                knowledgeUpdatedAt={node.knowledgeUpdatedAt}
                 onInputChange={(value) => onInputChange(node.id, value)}
                 onSend={() => onSendMessage(node.id)}
                 chatScrollRef={(element) => {

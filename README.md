@@ -118,3 +118,10 @@ supabase functions serve chat-completion --env-file supabase/.env
 ```
 
 The frontend calls this Edge Function via `supabase.functions.invoke`, routing requests to OpenAI (`gpt-4o`, `gpt-4o mini`) or Anthropic (`claude-3.5-sonnet-latest`, `claude-3-haiku-20240307`) depending on the model a node selects.
+
+## Conversation memory & context management
+
+- Every canvas node now stores three layers of knowledge: the raw transcript, an auto-generated summary, and inherited “child insights”. These fields are persisted alongside the node in Supabase and surface in the UI through the **Knowledge** drawer on each card.
+- After each assistant reply the app calls the Supabase Edge Function again (via `generateNodeKnowledge`) to distil the latest transcript into JSON (`summary` + `parentInsights`). Parent nodes automatically ingest those insights so ancestor conversations stay aware of discoveries further down the tree.
+- When the user sends a new message, `buildContextMessages` assembles the prompt: base system instructions, node summary, relevant ancestor insights, and a trimmed sliding window of the most recent turns. The helper estimates token usage (`src/services/tokens.ts`) and keeps the bundle below ~6000 tokens, so models receive as much relevant context as possible without hitting limits.
+- Manual “system prompt” or “context” inputs have been removed from the UI; prompting is managed entirely by the backend pipeline. To tweak the defaults, edit `src/constants/prompts.ts` and adjust the heuristics inside `src/services/contextBuilder.ts` / `src/services/summaries.ts`.

@@ -7,6 +7,8 @@ import { MODELS } from '../../constants/models';
 import { useSupabaseAuth } from '../../contexts/SupabaseAuthContext';
 import { supabase } from '../../lib/supabaseClient';
 import { requestAIResponse } from '../../services/aiProvider';
+import { buildContextMessages } from '../../services/contextBuilder';
+import { generateNodeKnowledge } from '../../services/summaries';
 import {
   CanvasNode,
   DragOffset,
@@ -22,15 +24,17 @@ import {
   createBranchTitle
 } from '../../utils/canvas';
 
-type StoredCanvasNode = Omit<CanvasNode, 'systemPrompt' | 'context'> & {
-  systemPrompt?: string;
-  context?: string;
+type StoredCanvasNode = Omit<CanvasNode, 'summary' | 'childInsights' | 'knowledgeUpdatedAt'> & {
+  summary?: string;
+  childInsights?: Record<string, string>;
+  knowledgeUpdatedAt?: string | null;
 };
 
 const withNodeDefaults = (node: StoredCanvasNode): CanvasNode => ({
   ...node,
-  systemPrompt: node.systemPrompt ?? '',
-  context: node.context ?? ''
+  summary: node.summary ?? '',
+  childInsights: node.childInsights ?? {},
+  knowledgeUpdatedAt: node.knowledgeUpdatedAt ?? null
 });
 
 const createInitialNodes = (): CanvasNode[] => [
@@ -51,8 +55,9 @@ const createInitialNodes = (): CanvasNode[] => [
     title: 'Main Thread',
     isExpanded: true,
     model: 'claude-3-5-sonnet-latest',
-    systemPrompt: '',
-    context: ''
+    summary: '',
+    childInsights: {},
+    knowledgeUpdatedAt: null
   }
 ];
 
@@ -110,6 +115,7 @@ const CanvasChatApp: React.FC = () => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [hasInitiallyCentered, setHasInitiallyCentered] = useState(false);
 
   const canvasRef = useRef<SVGSVGElement>(null);
   const chatScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -135,23 +141,95 @@ const CanvasChatApp: React.FC = () => {
     }, 100);
   }, []);
 
+  const refreshNodeKnowledge = useCallback(
+    async (nodeId: string, conversation: Message[], nodeTitle: string) => {
+      try {
+        const knowledge = await generateNodeKnowledge(conversation, nodeTitle);
+        if (!knowledge) {
+          return;
+        }
+
+        const knowledgeUpdatedAt = new Date().toISOString();
+        const trimmedSummary = knowledge.summary.trim();
+        const trimmedParentInsights = knowledge.parentInsights.trim();
+
+        setNodes((prev) => {
+          const nodeMap = new Map(prev.map((node) => [node.id, node] as const));
+          const nextNodes = prev.map((node) => ({
+            ...node,
+            childInsights: { ...node.childInsights }
+          }));
+          const indexById = new Map(nextNodes.map((node, index) => [node.id, index] as const));
+
+          const targetIndex = indexById.get(nodeId);
+          if (targetIndex === undefined) {
+            return prev;
+          }
+
+          const existingSummary = nextNodes[targetIndex].summary;
+          const summaryToApply = trimmedSummary || existingSummary;
+          const shouldStampUpdate = Boolean(trimmedSummary || trimmedParentInsights);
+
+          nextNodes[targetIndex] = {
+            ...nextNodes[targetIndex],
+            summary: summaryToApply,
+            knowledgeUpdatedAt: shouldStampUpdate
+              ? knowledgeUpdatedAt
+              : nextNodes[targetIndex].knowledgeUpdatedAt
+          };
+
+          let currentNodeId = nodeId;
+          let propagatedInsight = trimmedParentInsights || summaryToApply;
+
+          while (true) {
+            const parentId = nodeMap.get(currentNodeId)?.parent;
+            if (!parentId) {
+              break;
+            }
+
+            const parentIndex = indexById.get(parentId);
+            if (parentIndex === undefined) {
+              break;
+            }
+
+            const childTitle = nodeMap.get(currentNodeId)?.title ?? 'Branch';
+            const parentNode = nextNodes[parentIndex];
+            const previousInsight = parentNode.childInsights[currentNodeId] ?? '';
+            const formattedInsight = propagatedInsight
+              ? `${childTitle}: ${propagatedInsight}`
+              : previousInsight;
+
+            const updatedInsights = { ...parentNode.childInsights };
+
+            if (formattedInsight) {
+              updatedInsights[currentNodeId] = formattedInsight;
+            } else {
+              delete updatedInsights[currentNodeId];
+            }
+
+            nextNodes[parentIndex] = {
+              ...parentNode,
+              childInsights: updatedInsights
+            };
+
+            propagatedInsight = formattedInsight;
+            currentNodeId = parentId;
+          }
+
+          return nextNodes;
+        });
+      } catch (error) {
+        console.error('Failed to refresh node knowledge', error);
+      }
+    },
+    [generateNodeKnowledge, setNodes]
+  );
+
   const updateNodeModel = (nodeId: string, modelId: string) => {
     setNodes((prev) =>
       prev.map((node) => (node.id === nodeId ? { ...node, model: modelId } : node))
     );
     setShowModelSelector((prev) => ({ ...prev, [nodeId]: false }));
-  };
-
-  const updateNodeSystemPrompt = (nodeId: string, prompt: string) => {
-    setNodes((prev) =>
-      prev.map((node) => (node.id === nodeId ? { ...node, systemPrompt: prompt } : node))
-    );
-  };
-
-  const updateNodeContext = (nodeId: string, value: string) => {
-    setNodes((prev) =>
-      prev.map((node) => (node.id === nodeId ? { ...node, context: value } : node))
-    );
   };
 
   const toggleNodeExpansion = (nodeId: string) => {
@@ -318,6 +396,34 @@ const CanvasChatApp: React.FC = () => {
     };
   }, []);
 
+  const centerOnRootNode = useCallback(() => {
+    const rootNode = nodes.find(node => node.id === 'root');
+    if (rootNode && canvasRef.current) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const centerX = rect.width / 2;
+      const centerY = rect.height / 2;
+      
+      // Calculate pan offset to center the root node
+      const newPanX = centerX - rootNode.x;
+      const newPanY = centerY - rootNode.y;
+      
+      setPanOffset({ x: newPanX, y: newPanY });
+      setZoom(1);
+    }
+  }, [nodes]);
+
+  // Center on root node only on the very first load
+  useEffect(() => {
+    if (hasLoadedFromSupabase && nodes.length > 0 && !hasInitiallyCentered) {
+      // Small delay to ensure canvas is rendered
+      setTimeout(() => {
+        centerOnRootNode();
+        setHasInitiallyCentered(true);
+      }, 200);
+    }
+  }, [hasLoadedFromSupabase, hasInitiallyCentered, centerOnRootNode]);
+
+
   const createBranchFromText = (parentId: string, selectedContent: string, query?: string) => {
     const parent = findNode(parentId);
     if (!parent) return;
@@ -351,16 +457,20 @@ const CanvasChatApp: React.FC = () => {
       title: branchTitle,
       isExpanded: true,
       model: parent.model,
-      systemPrompt: parent.systemPrompt,
-      context: parent.context
+      summary: '',
+      childInsights: {},
+      knowledgeUpdatedAt: null
     };
 
+    let generatedNodes: CanvasNode[] = [];
     setNodes((prev) => {
       const updatedParent = prev.map((node) =>
         node.id === parentId ? { ...node, children: [...node.children, newNodeId] } : node
       );
       const withNewNode = [...updatedParent, newNode];
-      return repositionChildren(withNewNode, parentId);
+      const repositioned = repositionChildren(withNewNode, parentId);
+      generatedNodes = repositioned;
+      return repositioned;
     });
 
     setSelectedText({});
@@ -369,35 +479,96 @@ const CanvasChatApp: React.FC = () => {
       selection.removeAllRanges();
     }
 
+    const nextNodes = generatedNodes.length ? generatedNodes : nodes;
+
     // If there's a query, automatically send it to get an AI response
     if (query && query.trim()) {
-      // Set processing state for the new node
       setIsProcessing((prev) => ({ ...prev, [newNodeId]: true }));
 
-      // Prepare the conversation for AI response
-      const systemMessages: Message[] = [];
-      if (newNode.systemPrompt.trim()) {
-        systemMessages.push({ role: 'system', content: newNode.systemPrompt.trim() });
-      }
-      if (newNode.context.trim()) {
-        systemMessages.push({ role: 'system', content: newNode.context.trim() });
-      }
+      const contextMessages = buildContextMessages({
+        nodes: nextNodes,
+        targetNodeId: newNodeId
+      });
 
-      const conversation = [...systemMessages, ...newNode.messages];
+      // Create a streaming assistant message
+      const streamingMessage: Message = { role: 'assistant', content: '' };
+      addMessage(newNodeId, streamingMessage);
 
-      // Send the query to AI
+      let accumulatedContent = '';
+
       requestAIResponse({
         model: newNode.model,
-        messages: conversation
+        messages: contextMessages,
+        stream: true,
+        onChunk: (chunk: string) => {
+          accumulatedContent += chunk;
+          // Update the last message (the streaming one) with accumulated content
+          setNodes((prev) =>
+            prev.map((n) => {
+              if (n.id === newNodeId) {
+                const updatedMessages = [...n.messages];
+                const lastIndex = updatedMessages.length - 1;
+                if (lastIndex >= 0 && updatedMessages[lastIndex].role === 'assistant') {
+                  updatedMessages[lastIndex] = {
+                    ...updatedMessages[lastIndex],
+                    content: accumulatedContent
+                  };
+                }
+                return { ...n, messages: updatedMessages };
+              }
+              return n;
+            })
+          );
+
+          // Auto-scroll to bottom as content streams
+          setTimeout(() => {
+            const chatElement = chatScrollRefs.current[newNodeId];
+            if (chatElement) {
+              chatElement.scrollTop = chatElement.scrollHeight;
+            }
+          }, 50);
+        }
       })
-        .then((aiContent) => {
-          addMessage(newNodeId, { role: 'assistant', content: aiContent });
+        .then(async (aiContent) => {
+          // Final update with complete content
+          const assistantMessage: Message = { role: 'assistant', content: aiContent };
+          setNodes((prev) =>
+            prev.map((n) => {
+              if (n.id === newNodeId) {
+                const updatedMessages = [...n.messages];
+                const lastIndex = updatedMessages.length - 1;
+                if (lastIndex >= 0 && updatedMessages[lastIndex].role === 'assistant') {
+                  updatedMessages[lastIndex] = assistantMessage;
+                }
+                return { ...n, messages: updatedMessages };
+              }
+              return n;
+            })
+          );
+          const fullConversation = [...initialMessages, assistantMessage];
+          await refreshNodeKnowledge(newNodeId, fullConversation, newNode.title);
         })
         .catch((error) => {
           console.error('AI response error', error);
           const fallbackMessage =
             error instanceof Error ? error.message : 'Unexpected error while generating a response.';
-          addMessage(newNodeId, { role: 'assistant', content: `Error: ${fallbackMessage}` });
+          const assistantMessage: Message = {
+            role: 'assistant',
+            content: `Error: ${fallbackMessage}`
+          };
+          setNodes((prev) =>
+            prev.map((n) => {
+              if (n.id === newNodeId) {
+                const updatedMessages = [...n.messages];
+                const lastIndex = updatedMessages.length - 1;
+                if (lastIndex >= 0 && updatedMessages[lastIndex].role === 'assistant') {
+                  updatedMessages[lastIndex] = assistantMessage;
+                }
+                return { ...n, messages: updatedMessages };
+              }
+              return n;
+            })
+          );
         })
         .finally(() => {
           setIsProcessing((prev) => ({ ...prev, [newNodeId]: false }));
@@ -425,8 +596,9 @@ const CanvasChatApp: React.FC = () => {
       title: `Branch ${branchNumber}`,
       isExpanded: true,
       model: parent.model,
-      systemPrompt: parent.systemPrompt,
-      context: parent.context
+      summary: '',
+      childInsights: {},
+      knowledgeUpdatedAt: null
     };
 
     setNodes((prev) => {
@@ -448,13 +620,21 @@ const CanvasChatApp: React.FC = () => {
 
     setNodes((prev) => {
       const descendants = new Set(collectDescendants(prev, nodeId));
+      const idsToRemove = new Set<string>([nodeId, ...descendants]);
       const filtered = prev
-        .filter((node) => node.id !== nodeId && !descendants.has(node.id))
-        .map((node) =>
-          node.children.includes(nodeId)
-            ? { ...node, children: node.children.filter((childId) => childId !== nodeId) }
-            : node
-        );
+        .filter((node) => !idsToRemove.has(node.id))
+        .map((node) => {
+          const prunedChildren = node.children.filter((childId) => !idsToRemove.has(childId));
+          const prunedInsightsEntries = Object.entries(node.childInsights).filter(
+            ([childId]) => !idsToRemove.has(childId)
+          );
+
+          return {
+            ...node,
+            children: prunedChildren,
+            childInsights: Object.fromEntries(prunedInsightsEntries)
+          };
+        });
 
       if (parentId) {
         return repositionChildren(filtered, parentId);
@@ -478,34 +658,97 @@ const CanvasChatApp: React.FC = () => {
     }
 
     const userMessage: Message = { role: 'user', content: trimmed };
-    const systemMessages: Message[] = [];
-
-    if (node.systemPrompt.trim()) {
-      systemMessages.push({ role: 'system', content: node.systemPrompt.trim() });
-    }
-
-    if (node.context.trim()) {
-      systemMessages.push({ role: 'system', content: node.context.trim() });
-    }
-
-    const conversation = [...systemMessages, ...node.messages, userMessage];
+    const contextMessages = buildContextMessages({
+      nodes,
+      targetNodeId: nodeId,
+      upcomingMessages: [userMessage]
+    });
 
     addMessage(nodeId, userMessage);
 
     setInputValues((prev) => ({ ...prev, [nodeId]: '' }));
     setIsProcessing((prev) => ({ ...prev, [nodeId]: true }));
 
+    // Create a streaming assistant message
+    const streamingMessage: Message = { role: 'assistant', content: '' };
+    addMessage(nodeId, streamingMessage);
+
+    let accumulatedContent = '';
+
     try {
       const aiContent = await requestAIResponse({
         model: node.model,
-        messages: conversation
+        messages: contextMessages,
+        stream: true,
+        onChunk: (chunk: string) => {
+          accumulatedContent += chunk;
+          // Update the last message (the streaming one) with accumulated content
+          setNodes((prev) =>
+            prev.map((n) => {
+              if (n.id === nodeId) {
+                const updatedMessages = [...n.messages];
+                const lastIndex = updatedMessages.length - 1;
+                if (lastIndex >= 0 && updatedMessages[lastIndex].role === 'assistant') {
+                  updatedMessages[lastIndex] = {
+                    ...updatedMessages[lastIndex],
+                    content: accumulatedContent
+                  };
+                }
+                return { ...n, messages: updatedMessages };
+              }
+              return n;
+            })
+          );
+
+          // Auto-scroll to bottom as content streams
+          setTimeout(() => {
+            const chatElement = chatScrollRefs.current[nodeId];
+            if (chatElement) {
+              chatElement.scrollTop = chatElement.scrollHeight;
+            }
+          }, 50);
+        }
       });
-      addMessage(nodeId, { role: 'assistant', content: aiContent });
+
+      // Final update with complete content
+      const assistantMessage: Message = { role: 'assistant', content: aiContent };
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id === nodeId) {
+            const updatedMessages = [...n.messages];
+            const lastIndex = updatedMessages.length - 1;
+            if (lastIndex >= 0 && updatedMessages[lastIndex].role === 'assistant') {
+              updatedMessages[lastIndex] = assistantMessage;
+            }
+            return { ...n, messages: updatedMessages };
+          }
+          return n;
+        })
+      );
+
+      const fullConversation = [...node.messages, userMessage, assistantMessage];
+      await refreshNodeKnowledge(nodeId, fullConversation, node.title);
     } catch (error) {
       console.error('AI response error', error);
       const fallbackMessage =
         error instanceof Error ? error.message : 'Unexpected error while generating a response.';
-      addMessage(nodeId, { role: 'assistant', content: `Error: ${fallbackMessage}` });
+      const assistantMessage: Message = {
+        role: 'assistant',
+        content: `Error: ${fallbackMessage}`
+      };
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id === nodeId) {
+            const updatedMessages = [...n.messages];
+            const lastIndex = updatedMessages.length - 1;
+            if (lastIndex >= 0 && updatedMessages[lastIndex].role === 'assistant') {
+              updatedMessages[lastIndex] = assistantMessage;
+            }
+            return { ...n, messages: updatedMessages };
+          }
+          return n;
+        })
+      );
     } finally {
       setIsProcessing((prev) => ({ ...prev, [nodeId]: false }));
     }
@@ -601,30 +844,47 @@ const CanvasChatApp: React.FC = () => {
     };
   }, [handleMouseMove, handleMouseUp]);
 
-  const handleCanvasWheel = (event: React.WheelEvent<SVGSVGElement>) => {
+  const handleCanvasWheel = useCallback((event: WheelEvent) => {
     const target = event.target as HTMLElement | null;
     if (target?.closest('.chat-scrollable') || target?.closest('textarea')) {
       return;
     }
 
-    // event.preventDefault();
     if (!canvasRef.current) return;
 
     const rect = canvasRef.current.getBoundingClientRect();
-    const mouseX = (event.clientX - rect.left) / zoom - panOffset.x;
-    const mouseY = (event.clientY - rect.top) / zoom - panOffset.y;
+    const mouseX = event.clientX - rect.left;
+    const mouseY = event.clientY - rect.top;
 
-    const zoomFactor = event.deltaY > 0 ? 0.97 : 1.03;
+    const zoomFactor = event.deltaY > 0 ? 0.9 : 1.1;
     const newZoom = Math.max(0.2, Math.min(3, zoom * zoomFactor));
 
     if (newZoom !== zoom) {
-      const newPanX = panOffset.x - (mouseX * (newZoom - zoom)) / newZoom;
-      const newPanY = panOffset.y - (mouseY * (newZoom - zoom)) / newZoom;
+      event.preventDefault();
+      
+      // Calculate the point under the mouse cursor in world coordinates
+      const worldX = (mouseX / zoom) - panOffset.x;
+      const worldY = (mouseY / zoom) - panOffset.y;
+
+      // Calculate new pan offset to keep the same point under the mouse
+      const newPanX = (mouseX / newZoom) - worldX;
+      const newPanY = (mouseY / newZoom) - worldY;
 
       setZoom(newZoom);
       setPanOffset({ x: newPanX, y: newPanY });
     }
-  };
+  }, [zoom, panOffset.x, panOffset.y]);
+
+  // Add wheel event listener directly to canvas with passive: false
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.addEventListener('wheel', handleCanvasWheel, { passive: false });
+      return () => {
+        canvas.removeEventListener('wheel', handleCanvasWheel);
+      };
+    }
+  }, [handleCanvasWheel]);
 
   const toggleModelSelector = (nodeId: string) => {
     setShowModelSelector((prev) => ({ ...prev, [nodeId]: !prev[nodeId] }));
@@ -692,15 +952,12 @@ const CanvasChatApp: React.FC = () => {
           isProcessing={isProcessing}
           showModelSelector={showModelSelector}
           onCanvasMouseDown={handleCanvasMouseDown}
-          onCanvasWheel={handleCanvasWheel}
           onNodeMouseDown={handleMouseDown}
           onToggleNodeExpansion={toggleNodeExpansion}
           onCreateBranch={createBranch}
           onDeleteNode={deleteNode}
           onToggleModelSelector={toggleModelSelector}
           onUpdateModel={updateNodeModel}
-          onUpdateSystemPrompt={updateNodeSystemPrompt}
-          onUpdateContext={updateNodeContext}
           onInputChange={(nodeId, value) =>
             setInputValues((prev) => ({
               ...prev,

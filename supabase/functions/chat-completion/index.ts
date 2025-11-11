@@ -11,6 +11,7 @@ interface ChatCompletionPayload {
   model: string;
   messages: CanvasMessage[];
   temperature?: number;
+  stream?: boolean;
 }
 
 const corsHeaders = {
@@ -29,7 +30,7 @@ const ensureKey = (key: string | undefined, name: string) => {
   return key;
 };
 
-const callOpenAI = async (model: string, messages: CanvasMessage[], temperature: number) => {
+const callOpenAI = async (model: string, messages: CanvasMessage[], temperature: number, stream: boolean = false) => {
   const apiKey = ensureKey(OPENAI_API_KEY, 'OPENAI_API_KEY');
 
   const formatted = messages.map((message) => ({
@@ -37,6 +38,39 @@ const callOpenAI = async (model: string, messages: CanvasMessage[], temperature:
     content: message.content
   }));
 
+  if (stream) {
+    // For streaming, use OpenAI's chat completions endpoint
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: model.replace('gpt-4o', 'gpt-4o').replace('gpt-4', 'gpt-4'),
+        messages: formatted,
+        temperature,
+        max_tokens: 1024,
+        stream: true
+      })
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'OpenAI request failed';
+      try {
+        const error = await response.json();
+        errorMessage = error?.error?.message ?? errorMessage;
+      } catch {
+        const errorText = await response.text().catch(() => '');
+        errorMessage = errorText || errorMessage;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response;
+  }
+
+  // Non-streaming fallback
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: {
@@ -88,7 +122,7 @@ const callOpenAI = async (model: string, messages: CanvasMessage[], temperature:
   return fallback;
 };
 
-const callAnthropic = async (model: string, messages: CanvasMessage[], temperature: number) => {
+const callAnthropic = async (model: string, messages: CanvasMessage[], temperature: number, stream: boolean = false) => {
   const apiKey = ensureKey(ANTHROPIC_API_KEY, 'ANTHROPIC_API_KEY');
 
   const systemMessages: string[] = [];
@@ -127,16 +161,28 @@ const callAnthropic = async (model: string, messages: CanvasMessage[], temperatu
       messages: conversation,
       max_tokens: 1024,
       temperature,
-      system: systemMessages.length > 0 ? systemMessages.join('\n\n') : undefined
+      system: systemMessages.length > 0 ? systemMessages.join('\n\n') : undefined,
+      stream: stream
     })
   });
 
-  const data = await response.json();
-
   if (!response.ok) {
-    const message = data?.error?.message ?? 'Anthropic request failed';
-    throw new Error(message);
+    let errorMessage = 'Anthropic request failed';
+    try {
+      const data = await response.json();
+      errorMessage = data?.error?.message ?? errorMessage;
+    } catch {
+      const errorText = await response.text().catch(() => '');
+      errorMessage = errorText || errorMessage;
+    }
+    throw new Error(errorMessage);
   }
+
+  if (stream) {
+    return response;
+  }
+
+  const data = await response.json();
 
   const text = Array.isArray(data?.content)
     ? data.content
@@ -185,7 +231,7 @@ const handler = async (req: Request): Promise<Response> => {
     });
   }
 
-  const { model, messages, temperature = 0.7 } = payload;
+  const { model, messages, temperature = 0.7, stream = true } = payload;
 
   if (!model || !Array.isArray(messages) || messages.length === 0) {
     return new Response(JSON.stringify({ error: 'Model and messages are required.' }), {
@@ -199,21 +245,117 @@ const handler = async (req: Request): Promise<Response> => {
 
   try {
     const provider = model.startsWith('claude') ? 'anthropic' : 'openai';
-    const content =
-      provider === 'anthropic'
-        ? await callAnthropic(model, messages, temperature)
-        : await callOpenAI(model, messages, temperature);
-
-    return new Response(JSON.stringify({ content }), {
-      status: 200,
-      headers: {
-        ...corsHeaders,
-        'Content-Type': 'application/json'
+    
+    if (stream) {
+      let aiResponse: Response;
+      try {
+        aiResponse = provider === 'anthropic'
+          ? await callAnthropic(model, messages, temperature, true)
+          : await callOpenAI(model, messages, temperature, true);
+      } catch (apiError) {
+        throw apiError;
       }
-    });
+
+      if (!(aiResponse instanceof Response)) {
+        throw new Error('Streaming response expected');
+      }
+
+      // Create a streaming response
+      const stream = new ReadableStream({
+        async start(controller) {
+          const reader = aiResponse.body?.getReader();
+          if (!reader) {
+            controller.close();
+            return;
+          }
+
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() || '';
+
+              for (const line of lines) {
+                if (line.trim() === '') continue;
+                
+                if (line.startsWith('data: ')) {
+                  const data = line.slice(6);
+                  if (data === '[DONE]') {
+                    controller.close();
+                    return;
+                  }
+
+                  try {
+                    const parsed = JSON.parse(data);
+                    let chunk = '';
+
+                    if (provider === 'anthropic') {
+                      // Anthropic SSE format
+                      if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
+                        chunk = parsed.delta.text || '';
+                      } else if (parsed.type === 'message_stop') {
+                        controller.close();
+                        return;
+                      }
+                    } else {
+                      // OpenAI SSE format
+                      if (parsed.choices?.[0]?.delta?.content) {
+                        chunk = parsed.choices[0].delta.content;
+                      } else if (parsed.choices?.[0]?.finish_reason) {
+                        controller.close();
+                        return;
+                      }
+                    }
+
+                    if (chunk) {
+                      const encoded = new TextEncoder().encode(`data: ${JSON.stringify({ chunk })}\n\n`);
+                      controller.enqueue(encoded);
+                    }
+                  } catch (e) {
+                    // Skip invalid JSON
+                  }
+                }
+              }
+            }
+          } catch (error) {
+            controller.error(error);
+          } finally {
+            controller.close();
+          }
+        }
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive'
+        }
+      });
+    } else {
+      // Non-streaming fallback
+      const content = provider === 'anthropic'
+        ? await callAnthropic(model, messages, temperature, false)
+        : await callOpenAI(model, messages, temperature, false);
+
+      return new Response(JSON.stringify({ content }), {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json'
+        }
+      });
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    console.error('chat-completion error', message);
 
     return new Response(JSON.stringify({ error: message }), {
       status: 500,

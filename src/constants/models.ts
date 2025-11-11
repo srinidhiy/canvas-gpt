@@ -28,5 +28,12 @@ export const MODELS: Model[] = [
     short: 'GPT-4o mini',
     description: 'Fast and capable mini model',
     color: 'bg-emerald-50 text-emerald-700'
+  },
+  {
+    id: 'gpt-5-mini',
+    name: 'GPT-5 mini',
+    short: 'GPT-5 mini',
+    description: 'A faster, cost-efficient version of GPT-5 for well-defined tasks',
+    color: 'bg-blue-100 text-blue-700'
   }
 ];
