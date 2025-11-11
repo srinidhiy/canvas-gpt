@@ -29,6 +29,14 @@ export interface Model {
   color: string;
 }
 
+export interface ChatSession {
+  id: string;
+  title: string;
+  summary: string;
+  updated_at: string;
+  created_at: string;
+}
+
 export interface SelectedText {
   nodeId?: string;
   messageIndex?: number;

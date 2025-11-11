@@ -13,13 +13,6 @@ A canvas-based chat application with branching conversations, built with React, 
 
 ## Getting Started
 
-### Prerequisites
-
-- Node.js (version 16 or higher)
-- npm or yarn
-
-### Installation
-
 1. Install dependencies:
 ```bash
 npm install
@@ -31,31 +24,6 @@ npm run dev
 ```
 
 3. Open your browser and navigate to `http://localhost:5173`
-
-### Available Scripts
-
-- `npm run dev` - Start development server
-- `npm run build` - Build for production
-- `npm run preview` - Preview production build
-- `npm run lint` - Run ESLint
-
-## Technologies Used
-
-- React 18
-- TypeScript
-- Vite
-- Tailwind CSS
-- Lucide React (icons)
-- ESLint
-
-## Project Structure
-
-```
-src/
-├── App.tsx          # Main application component
-├── main.tsx         # Application entry point
-└── index.css        # Global styles with Tailwind
-```
 
 
 ## Supabase Setup
@@ -75,11 +43,15 @@ create table if not exists public.canvas_states (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users on delete cascade,
   nodes jsonb not null,
+  title text,
+  summary text,
+  created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );
 
-alter table public.canvas_states
-  add constraint canvas_states_user_unique unique (user_id);
+-- Remove unique constraint on user_id to allow multiple sessions per user
+-- If you have an existing table, run this to drop the constraint:
+-- alter table public.canvas_states drop constraint if exists canvas_states_user_unique;
 
 alter table public.canvas_states enable row level security;
 
@@ -91,9 +63,6 @@ create policy "Individuals can manage their canvas"
 ```
 
 4. Run the app with `npm run dev` – you will see an authentication screen. After signing in, your canvas is stored in Supabase and automatically synced.
-
-> Tip: if you need to reset your canvas for a user, delete the corresponding row from `public.canvas_states`.
-
 
 ## AI Provider Setup
 
@@ -118,10 +87,3 @@ supabase functions serve chat-completion --env-file supabase/.env
 ```
 
 The frontend calls this Edge Function via `supabase.functions.invoke`, routing requests to OpenAI (`gpt-4o`, `gpt-4o mini`) or Anthropic (`claude-3.5-sonnet-latest`, `claude-3-haiku-20240307`) depending on the model a node selects.
-
-## Conversation memory & context management
-
-- Every canvas node now stores three layers of knowledge: the raw transcript, an auto-generated summary, and inherited “child insights”. These fields are persisted alongside the node in Supabase and surface in the UI through the **Knowledge** drawer on each card.
-- After each assistant reply the app calls the Supabase Edge Function again (via `generateNodeKnowledge`) to distil the latest transcript into JSON (`summary` + `parentInsights`). Parent nodes automatically ingest those insights so ancestor conversations stay aware of discoveries further down the tree.
-- When the user sends a new message, `buildContextMessages` assembles the prompt: base system instructions, node summary, relevant ancestor insights, and a trimmed sliding window of the most recent turns. The helper estimates token usage (`src/services/tokens.ts`) and keeps the bundle below ~6000 tokens, so models receive as much relevant context as possible without hitting limits.
-- Manual “system prompt” or “context” inputs have been removed from the UI; prompting is managed entirely by the backend pipeline. To tweak the defaults, edit `src/constants/prompts.ts` and adjust the heuristics inside `src/services/contextBuilder.ts` / `src/services/summaries.ts`.
