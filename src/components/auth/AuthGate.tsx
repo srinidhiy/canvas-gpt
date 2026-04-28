@@ -1,6 +1,6 @@
 import React from 'react';
 
-import { useSupabaseAuth } from '../../contexts/SupabaseAuthContext';
+import { useAuth } from '../../contexts/AuthContext';
 import AuthForm from './AuthForm';
 
 interface AuthGateProps {
@@ -8,7 +8,7 @@ interface AuthGateProps {
 }
 
 const AuthGate: React.FC<AuthGateProps> = ({ children }) => {
-  const { user, loading } = useSupabaseAuth();
+  const { user, loading } = useAuth();
 
   if (loading) {
     return (

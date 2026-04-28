@@ -5,8 +5,8 @@ import CanvasControls from './CanvasControls';
 import BranchSelectionBanner from './BranchSelectionBanner';
 import ChatSessionsSidebar from './ChatSessionsSidebar';
 import { MODELS } from '../../constants/models';
-import { useSupabaseAuth } from '../../contexts/SupabaseAuthContext';
-import { supabase } from '../../lib/supabaseClient';
+import { useAuth } from '../../contexts/AuthContext';
+import { pb } from '../../lib/pocketbaseClient';
 import { requestAIResponse } from '../../services/aiProvider';
 import { buildContextMessages } from '../../services/contextBuilder';
 import { generateNodeKnowledge } from '../../services/summaries';
@@ -103,7 +103,7 @@ const repositionChildren = (nodes: CanvasNode[], parentId: string): CanvasNode[]
 };
 
 const CanvasChatApp: React.FC = () => {
-  const { user } = useSupabaseAuth();
+  const { user } = useAuth();
   const [nodes, setNodes] = useState<CanvasNode[]>(createInitialNodes);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -117,7 +117,7 @@ const CanvasChatApp: React.FC = () => {
   const [selectedText, setSelectedText] = useState<SelectedText>({});
   const [isProcessing, setIsProcessing] = useState<Record<string, boolean>>({});
   const [showModelSelector, setShowModelSelector] = useState<Record<string, boolean>>({});
-  const [hasLoadedFromSupabase, setHasLoadedFromSupabase] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
@@ -244,46 +244,35 @@ const CanvasChatApp: React.FC = () => {
     );
   };
 
-
   const createNewSession = async () => {
     if (!user) return;
 
-    const newSessionId = crypto.randomUUID();
     const defaultNodes = createInitialNodes();
-    const now = new Date().toISOString();
 
-    const { data, error } = await supabase
-      .from('canvas_states')
-      .insert({
-        id: newSessionId,
-        user_id: user.id,
+    try {
+      const record = await pb.collection('canvas_states').create({
+        user: user.id,
         nodes: defaultNodes,
         title: 'New Canvas',
-        summary: '',
-        created_at: now,
-        updated_at: now
-      })
-      .select('id, title, summary, updated_at, created_at')
-      .single();
+        summary: ''
+      });
 
-    if (error) {
+      const newSession: ChatSession = {
+        id: record.id,
+        title: record['title'] || 'New Canvas',
+        summary: record['summary'] || '',
+        updated_at: record.updated,
+        created_at: record.created
+      };
+
+      setSessions((prev) => [newSession, ...prev]);
+      setCurrentSessionId(record.id);
+      setNodes(defaultNodes);
+      setHasLoaded(true);
+      setHasInitiallyCentered(false);
+    } catch (error) {
       console.error('Failed to create session:', error);
-      return;
     }
-
-    const newSession: ChatSession = {
-      id: data.id,
-      title: data.title || 'New Canvas',
-      summary: data.summary || '',
-      updated_at: data.updated_at,
-      created_at: data.created_at || data.updated_at
-    };
-
-    setSessions((prev) => [newSession, ...prev]);
-    setCurrentSessionId(newSessionId);
-    setNodes(defaultNodes);
-    setHasLoadedFromSupabase(true);
-    setHasInitiallyCentered(false);
   };
 
   // Load all sessions for the user
@@ -296,33 +285,32 @@ const CanvasChatApp: React.FC = () => {
     }
 
     const loadSessions = async () => {
-      const { data, error } = await supabase
-        .from('canvas_states')
-        .select('id, title, summary, updated_at, created_at')
-        .eq('user_id', user.id)
-        .order('updated_at', { ascending: false });
+      try {
+        const records = await pb.collection('canvas_states').getFullList({
+          filter: pb.filter('user = {:userId}', { userId: user.id }),
+          sort: '-updated',
+          fields: 'id,title,summary,updated,created',
+          requestKey: null
+        });
 
-      if (error) {
-        console.error('Failed to load sessions:', error);
-        return;
-      }
+        if (records.length > 0) {
+          const sessionList: ChatSession[] = records.map((record) => ({
+            id: record.id,
+            title: record['title'] || 'Untitled Canvas',
+            summary: record['summary'] || '',
+            updated_at: record.updated,
+            created_at: record.created
+          }));
+          setSessions(sessionList);
 
-      if (data && data.length > 0) {
-        const sessionList: ChatSession[] = data.map((row) => ({
-          id: row.id,
-          title: row.title || 'Untitled Canvas',
-          summary: row.summary || '',
-          updated_at: row.updated_at,
-          created_at: row.created_at || row.updated_at
-        }));
-        setSessions(sessionList);
-        
-        // Load the most recent session if no current session is set
-        if (!currentSessionId && sessionList.length > 0) {
-          setCurrentSessionId(sessionList[0].id);
+          if (!currentSessionId && sessionList.length > 0) {
+            setCurrentSessionId(sessionList[0].id);
+          }
+        } else {
+          await createNewSession();
         }
-      } else {
-        // No sessions exist, create a default one
+      } catch (error) {
+        console.error('Failed to load sessions:', error);
         await createNewSession();
       }
     };
@@ -339,106 +327,84 @@ const CanvasChatApp: React.FC = () => {
 
     let isActive = true;
 
-    // Reset state before loading
-    setHasLoadedFromSupabase(false);
+    setHasLoaded(false);
     setSyncError(null);
     setLastSavedAt(null);
     setHasInitiallyCentered(false);
-    // Reset canvas position immediately to prevent showing old position
     setPanOffset({ x: 0, y: 0 });
     setZoom(1);
 
     const loadNodes = async () => {
       setIsSyncing(true);
-      const { data, error } = await supabase
-        .from('canvas_states')
-        .select('nodes')
-        .eq('id', currentSessionId)
-        .eq('user_id', user.id)
-        .maybeSingle();
+      try {
+        const record = await pb.collection('canvas_states').getOne(currentSessionId, { requestKey: null });
 
-      if (!isActive) {
-        return;
-      }
+        if (!isActive) return;
 
-      if (error) {
-        setSyncError(error.message);
-        const defaultNodes = createInitialNodes();
-        setNodes(defaultNodes);
-        if (isActive) {
-          setHasLoadedFromSupabase(true);
-          setIsSyncing(false);
-        }
-      } else if (Array.isArray(data?.nodes)) {
-        const storedNodes = data.nodes as StoredCanvasNode[];
-        const loadedNodes = storedNodes.map(withNodeDefaults);
-        const rootNode = loadedNodes.find(node => node.id === 'root');
-        
-        // Calculate center position FIRST using window dimensions as estimate
-        // This ensures pan/zoom is set before nodes render
-        if (isActive && rootNode) {
-          const nodeCenterX = rootNode.x + NODE_WIDTH / 2;
-          const nodeHeight = rootNode.isExpanded ? EXPANDED_HEIGHT : COLLAPSED_HEIGHT;
-          const nodeCenterY = rootNode.y + nodeHeight / 2;
-          
-          // Use window dimensions as initial estimate (canvas typically fills most of viewport)
-          // Account for sidebar (264px) and header
-          const estimatedCenterX = (window.innerWidth - 264) / 2;
-          const estimatedCenterY = window.innerHeight / 2;
-          
-          // Set pan/zoom immediately with estimate
-          setZoom(1);
-          setPanOffset({ x: estimatedCenterX - nodeCenterX, y: estimatedCenterY - nodeCenterY });
-          setHasInitiallyCentered(true);
-        }
-        
-        // Set nodes - they'll render at the estimated centered position
-        setNodes(loadedNodes);
-        
-        // Fine-tune centering after canvas renders
-        if (isActive && rootNode) {
-          const nodeCenterX = rootNode.x + NODE_WIDTH / 2;
-          const nodeHeight = rootNode.isExpanded ? EXPANDED_HEIGHT : COLLAPSED_HEIGHT;
-          const nodeCenterY = rootNode.y + nodeHeight / 2;
-          
-          requestAnimationFrame(() => {
+        const rawNodes = record['nodes'];
+        if (Array.isArray(rawNodes)) {
+          const storedNodes = rawNodes as StoredCanvasNode[];
+          const loadedNodes = storedNodes.map(withNodeDefaults);
+          const rootNode = loadedNodes.find((node) => node.id === 'root');
+
+          if (isActive && rootNode) {
+            const nodeCenterX = rootNode.x + NODE_WIDTH / 2;
+            const nodeHeight = rootNode.isExpanded ? EXPANDED_HEIGHT : COLLAPSED_HEIGHT;
+            const nodeCenterY = rootNode.y + nodeHeight / 2;
+
+            const estimatedCenterX = (window.innerWidth - 264) / 2;
+            const estimatedCenterY = window.innerHeight / 2;
+
+            setZoom(1);
+            setPanOffset({ x: estimatedCenterX - nodeCenterX, y: estimatedCenterY - nodeCenterY });
+            setHasInitiallyCentered(true);
+          }
+
+          setNodes(loadedNodes);
+
+          if (isActive && rootNode) {
+            const nodeCenterX = rootNode.x + NODE_WIDTH / 2;
+            const nodeHeight = rootNode.isExpanded ? EXPANDED_HEIGHT : COLLAPSED_HEIGHT;
+            const nodeCenterY = rootNode.y + nodeHeight / 2;
+
             requestAnimationFrame(() => {
-              if (!isActive) {
-                setHasLoadedFromSupabase(true);
-                setIsSyncing(false);
-                return;
-              }
-              
-              if (canvasRef.current) {
-                const rect = canvasRef.current.getBoundingClientRect();
-                const actualCenterX = rect.width / 2;
-                const actualCenterY = rect.height / 2;
-                
-                // Fine-tune if significantly different
-                setPanOffset({ x: actualCenterX - nodeCenterX, y: actualCenterY - nodeCenterY });
-              }
-              
-              // Mark as loaded AFTER fine-tuning
-              if (isActive) {
-                setHasLoadedFromSupabase(true);
-                setIsSyncing(false);
-              }
+              requestAnimationFrame(() => {
+                if (!isActive) {
+                  setHasLoaded(true);
+                  setIsSyncing(false);
+                  return;
+                }
+
+                if (canvasRef.current) {
+                  const rect = canvasRef.current.getBoundingClientRect();
+                  setPanOffset({ x: rect.width / 2 - nodeCenterX, y: rect.height / 2 - nodeCenterY });
+                }
+
+                if (isActive) {
+                  setHasLoaded(true);
+                  setIsSyncing(false);
+                }
+              });
             });
-          });
+          } else {
+            if (isActive) {
+              setHasLoaded(true);
+              setIsSyncing(false);
+            }
+          }
         } else {
-          // If no root node, just mark as loaded
+          setNodes(createInitialNodes());
           if (isActive) {
-            setHasLoadedFromSupabase(true);
+            setHasLoaded(true);
             setIsSyncing(false);
           }
         }
-      } else {
-        const defaultNodes = createInitialNodes();
-        setNodes(defaultNodes);
-        if (isActive) {
-          setHasLoadedFromSupabase(true);
-          setIsSyncing(false);
-        }
+      } catch (error) {
+        if (!isActive) return;
+        setSyncError(error instanceof Error ? error.message : 'Failed to load canvas.');
+        setNodes(createInitialNodes());
+        setHasLoaded(true);
+        setIsSyncing(false);
       }
     };
 
@@ -453,47 +419,34 @@ const CanvasChatApp: React.FC = () => {
     };
   }, [user, currentSessionId]);
 
-  // Generate session title from root node (simple, max 80 chars)
   const generateSessionTitle = (nodes: CanvasNode[]): string => {
     const rootNode = nodes.find((n) => n.id === 'root');
     if (!rootNode) return 'New Canvas';
-    
-    // Look for the first user message as the title
+
     const firstUserMessage = rootNode.messages.find((m) => m.role === 'user');
     if (firstUserMessage && firstUserMessage.content.trim()) {
       const content = firstUserMessage.content.trim();
-      // Return a simple title (max 80 chars)
-      if (content.length <= 80) {
-        return content;
-      }
-      // Truncate at word boundary if possible
+      if (content.length <= 80) return content;
       const truncated = content.substring(0, 77);
       const lastSpace = truncated.lastIndexOf(' ');
-      return lastSpace > 50 
-        ? truncated.substring(0, lastSpace) + '...'
-        : truncated + '...';
+      return lastSpace > 50 ? truncated.substring(0, lastSpace) + '...' : truncated + '...';
     }
-    
-    // Fallback to root node title or default
+
     return rootNode.title || 'New Canvas';
   };
 
-  // Generate session summary for detailed view (can be longer)
   const generateSessionSummary = (nodes: CanvasNode[]): string => {
     const rootNode = nodes.find((n) => n.id === 'root');
     if (!rootNode) return '';
-    
-    // Use the summary if available and meaningful
     if (rootNode.summary && rootNode.summary.trim() && rootNode.summary !== 'New conversation') {
       return rootNode.summary;
     }
-    
     return '';
   };
 
   // Save nodes for the current session
   useEffect(() => {
-    if (!user || !hasLoadedFromSupabase || !currentSessionId) {
+    if (!user || !hasLoaded || !currentSessionId) {
       return;
     }
 
@@ -510,50 +463,38 @@ const CanvasChatApp: React.FC = () => {
         const title = generateSessionTitle(nodes);
         const summary = generateSessionSummary(nodes);
 
-        const { error } = await supabase
-          .from('canvas_states')
-          .upsert(
-            {
-              id: currentSessionId,
-              user_id: user.id,
-              nodes,
-              title,
-              summary,
-              updated_at: new Date().toISOString()
-            },
-            { onConflict: 'id' }
-          );
-
-        if (!isActive) {
-          return;
+        try {
+          await pb.collection('canvas_states').update(currentSessionId, { nodes, title, summary });
+        } catch {
+          // Record doesn't exist yet, create it
+          await pb.collection('canvas_states').create({
+            id: currentSessionId,
+            user: user.id,
+            nodes,
+            title,
+            summary
+          });
         }
 
-        if (error) {
-          setSyncError(error.message);
-        } else {
-          setSyncError(null);
-          setLastSavedAt(new Date());
-          
-          // Update sessions list with new summary/title
-          setSessions((prev) =>
-            prev.map((s) =>
-              s.id === currentSessionId
-                ? { ...s, title, summary, updated_at: new Date().toISOString() }
-                : s
-            )
-          );
-        }
+        if (!isActive) return;
+
+        setSyncError(null);
+        setLastSavedAt(new Date());
+
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === currentSessionId
+              ? { ...s, title, summary, updated_at: new Date().toISOString() }
+              : s
+          )
+        );
       } catch (saveError: unknown) {
-        if (!isActive) {
-          return;
-        }
+        if (!isActive) return;
         setSyncError(
           saveError instanceof Error ? saveError.message : 'Failed to save conversation.'
         );
       } finally {
-        if (!isActive) {
-          return;
-        }
+        if (!isActive) return;
         setIsSyncing(false);
         saveTimeoutRef.current = null;
       }
@@ -566,32 +507,28 @@ const CanvasChatApp: React.FC = () => {
         saveTimeoutRef.current = null;
       }
     };
-  }, [nodes, user, hasLoadedFromSupabase, currentSessionId]);
+  }, [nodes, user, hasLoaded, currentSessionId]);
 
   useEffect(() => {
     const handleTextSelected = (event: CustomEvent) => {
       const { nodeId, messageIndex, text, range } = event.detail;
-      setSelectedText({
-        nodeId,
-        messageIndex,
-        text,
-        range
-      });
+      setSelectedText({ nodeId, messageIndex, text, range });
     };
 
     const handleGlobalClick = (event: MouseEvent) => {
       const target = event.target as Element;
-      
-      // Only clear selection if clicking outside of messages and not on banner elements
-      if (!target.closest('.selectable-message') && 
-          !target.closest('.branch-button') && 
-          !target.closest('[class*="fixed"]') &&
-          !target.closest('form') &&
-          !target.closest('input') &&
-          !target.closest('button')) {
+
+      if (
+        !target.closest('.selectable-message') &&
+        !target.closest('.branch-button') &&
+        !target.closest('[class*="fixed"]') &&
+        !target.closest('form') &&
+        !target.closest('input') &&
+        !target.closest('button')
+      ) {
         setSelectedText({});
       }
-      
+
       if (!target.closest('.model-selector')) {
         setShowModelSelector({});
       }
@@ -607,46 +544,35 @@ const CanvasChatApp: React.FC = () => {
   }, []);
 
   const centerOnRootNode = useCallback(() => {
-    const rootNode = nodes.find(node => node.id === 'root');
+    const rootNode = nodes.find((node) => node.id === 'root');
     if (rootNode && canvasRef.current) {
-      // Wait a bit for the canvas to be fully rendered
       setTimeout(() => {
         if (!canvasRef.current) return;
         const rect = canvasRef.current.getBoundingClientRect();
         const centerX = rect.width / 2;
         const centerY = rect.height / 2;
-        
-        // Calculate pan offset to center the root node
-        // Transform is: translate(panOffset.x * zoom, panOffset.y * zoom) scale(zoom)
-        // So screen position = (worldX + panOffset.x) * zoom
-        // To center the node's center: centerX = (rootNode.x + NODE_WIDTH/2 + panOffset.x) * zoom
-        // Solving: panOffset.x = (centerX / zoom) - rootNode.x - NODE_WIDTH/2
+
         const targetZoom = 1;
         const nodeCenterX = rootNode.x + NODE_WIDTH / 2;
-        // For Y, center on the node's vertical center
         const nodeHeight = rootNode.isExpanded ? EXPANDED_HEIGHT : COLLAPSED_HEIGHT;
         const nodeCenterY = rootNode.y + nodeHeight / 2;
-        const newPanX = (centerX / targetZoom) - nodeCenterX;
-        const newPanY = (centerY / targetZoom) - nodeCenterY;
-        
-        // Set zoom first, then pan offset
+        const newPanX = centerX / targetZoom - nodeCenterX;
+        const newPanY = centerY / targetZoom - nodeCenterY;
+
         setZoom(targetZoom);
         setPanOffset({ x: newPanX, y: newPanY });
       }, 200);
     }
   }, [nodes]);
 
-  // Center on root node only if not already centered during load
   useEffect(() => {
-    if (hasLoadedFromSupabase && nodes.length > 0 && !hasInitiallyCentered) {
-      // Fallback centering if it wasn't done during load
+    if (hasLoaded && nodes.length > 0 && !hasInitiallyCentered) {
       setTimeout(() => {
         centerOnRootNode();
         setHasInitiallyCentered(true);
       }, 100);
     }
-  }, [hasLoadedFromSupabase, hasInitiallyCentered, centerOnRootNode, nodes]);
-
+  }, [hasLoaded, hasInitiallyCentered, centerOnRootNode, nodes]);
 
   const createBranchFromText = (parentId: string, selectedContent: string, query?: string) => {
     const parent = findNode(parentId);
@@ -661,13 +587,9 @@ const CanvasChatApp: React.FC = () => {
     };
 
     const initialMessages: Message[] = [contextMessage];
-    
-    // If there's a query, add it as a user message
+
     if (query && query.trim()) {
-      initialMessages.push({
-        role: 'user',
-        content: query.trim()
-      });
+      initialMessages.push({ role: 'user', content: query.trim() });
     }
 
     const newNode: CanvasNode = {
@@ -705,16 +627,10 @@ const CanvasChatApp: React.FC = () => {
 
     const nextNodes = generatedNodes.length ? generatedNodes : nodes;
 
-    // If there's a query, automatically send it to get an AI response
     if (query && query.trim()) {
       setIsProcessing((prev) => ({ ...prev, [newNodeId]: true }));
 
-      const contextMessages = buildContextMessages({
-        nodes: nextNodes,
-        targetNodeId: newNodeId
-      });
-
-      // Create a streaming assistant message
+      const contextMessages = buildContextMessages({ nodes: nextNodes, targetNodeId: newNodeId });
       const streamingMessage: Message = { role: 'assistant', content: '' };
       addMessage(newNodeId, streamingMessage);
 
@@ -726,35 +642,26 @@ const CanvasChatApp: React.FC = () => {
         stream: true,
         onChunk: (chunk: string) => {
           accumulatedContent += chunk;
-          // Update the last message (the streaming one) with accumulated content
           setNodes((prev) =>
             prev.map((n) => {
               if (n.id === newNodeId) {
                 const updatedMessages = [...n.messages];
                 const lastIndex = updatedMessages.length - 1;
                 if (lastIndex >= 0 && updatedMessages[lastIndex].role === 'assistant') {
-                  updatedMessages[lastIndex] = {
-                    ...updatedMessages[lastIndex],
-                    content: accumulatedContent
-                  };
+                  updatedMessages[lastIndex] = { ...updatedMessages[lastIndex], content: accumulatedContent };
                 }
                 return { ...n, messages: updatedMessages };
               }
               return n;
             })
           );
-
-          // Auto-scroll to bottom as content streams
           setTimeout(() => {
             const chatElement = chatScrollRefs.current[newNodeId];
-            if (chatElement) {
-              chatElement.scrollTop = chatElement.scrollHeight;
-            }
+            if (chatElement) chatElement.scrollTop = chatElement.scrollHeight;
           }, 50);
         }
       })
         .then(async (aiContent) => {
-          // Final update with complete content
           const assistantMessage: Message = { role: 'assistant', content: aiContent };
           setNodes((prev) =>
             prev.map((n) => {
@@ -773,13 +680,8 @@ const CanvasChatApp: React.FC = () => {
           await refreshNodeKnowledge(newNodeId, fullConversation, newNode.title);
         })
         .catch((error) => {
-          console.error('AI response error', error);
-          const fallbackMessage =
-            error instanceof Error ? error.message : 'Unexpected error while generating a response.';
-          const assistantMessage: Message = {
-            role: 'assistant',
-            content: `Error: ${fallbackMessage}`
-          };
+          const fallbackMessage = error instanceof Error ? error.message : 'Unexpected error.';
+          const assistantMessage: Message = { role: 'assistant', content: `Error: ${fallbackMessage}` };
           setNodes((prev) =>
             prev.map((n) => {
               if (n.id === newNodeId) {
@@ -811,9 +713,7 @@ const CanvasChatApp: React.FC = () => {
       id: newNodeId,
       x: parent.x,
       y: parent.y + VERTICAL_OFFSET,
-      messages: [
-        { role: 'assistant', content: 'New conversation branch started. What would you like to explore?' }
-      ],
+      messages: [{ role: 'assistant', content: 'New conversation branch started. What would you like to explore?' }],
       children: [],
       parent: parentId,
       isActive: true,
@@ -852,18 +752,10 @@ const CanvasChatApp: React.FC = () => {
           const prunedInsightsEntries = Object.entries(node.childInsights).filter(
             ([childId]) => !idsToRemove.has(childId)
           );
-
-          return {
-            ...node,
-            children: prunedChildren,
-            childInsights: Object.fromEntries(prunedInsightsEntries)
-          };
+          return { ...node, children: prunedChildren, childInsights: Object.fromEntries(prunedInsightsEntries) };
         });
 
-      if (parentId) {
-        return repositionChildren(filtered, parentId);
-      }
-
+      if (parentId) return repositionChildren(filtered, parentId);
       return filtered;
     });
   };
@@ -872,28 +764,18 @@ const CanvasChatApp: React.FC = () => {
     const rawInput = inputValues[nodeId] ?? '';
     const trimmed = rawInput.trim();
 
-    if (!trimmed || isProcessing[nodeId]) {
-      return;
-    }
+    if (!trimmed || isProcessing[nodeId]) return;
 
     const node = findNode(nodeId);
-    if (!node) {
-      return;
-    }
+    if (!node) return;
 
     const userMessage: Message = { role: 'user', content: trimmed };
-    const contextMessages = buildContextMessages({
-      nodes,
-      targetNodeId: nodeId,
-      upcomingMessages: [userMessage]
-    });
+    const contextMessages = buildContextMessages({ nodes, targetNodeId: nodeId, upcomingMessages: [userMessage] });
 
     addMessage(nodeId, userMessage);
-
     setInputValues((prev) => ({ ...prev, [nodeId]: '' }));
     setIsProcessing((prev) => ({ ...prev, [nodeId]: true }));
 
-    // Create a streaming assistant message
     const streamingMessage: Message = { role: 'assistant', content: '' };
     addMessage(nodeId, streamingMessage);
 
@@ -906,35 +788,26 @@ const CanvasChatApp: React.FC = () => {
         stream: true,
         onChunk: (chunk: string) => {
           accumulatedContent += chunk;
-          // Update the last message (the streaming one) with accumulated content
           setNodes((prev) =>
             prev.map((n) => {
               if (n.id === nodeId) {
                 const updatedMessages = [...n.messages];
                 const lastIndex = updatedMessages.length - 1;
                 if (lastIndex >= 0 && updatedMessages[lastIndex].role === 'assistant') {
-                  updatedMessages[lastIndex] = {
-                    ...updatedMessages[lastIndex],
-                    content: accumulatedContent
-                  };
+                  updatedMessages[lastIndex] = { ...updatedMessages[lastIndex], content: accumulatedContent };
                 }
                 return { ...n, messages: updatedMessages };
               }
               return n;
             })
           );
-
-          // Auto-scroll to bottom as content streams
           setTimeout(() => {
             const chatElement = chatScrollRefs.current[nodeId];
-            if (chatElement) {
-              chatElement.scrollTop = chatElement.scrollHeight;
-            }
+            if (chatElement) chatElement.scrollTop = chatElement.scrollHeight;
           }, 50);
         }
       });
 
-      // Final update with complete content
       const assistantMessage: Message = { role: 'assistant', content: aiContent };
       setNodes((prev) =>
         prev.map((n) => {
@@ -953,13 +826,8 @@ const CanvasChatApp: React.FC = () => {
       const fullConversation = [...node.messages, userMessage, assistantMessage];
       await refreshNodeKnowledge(nodeId, fullConversation, node.title);
     } catch (error) {
-      console.error('AI response error', error);
-      const fallbackMessage =
-        error instanceof Error ? error.message : 'Unexpected error while generating a response.';
-      const assistantMessage: Message = {
-        role: 'assistant',
-        content: `Error: ${fallbackMessage}`
-      };
+      const fallbackMessage = error instanceof Error ? error.message : 'Unexpected error.';
+      const assistantMessage: Message = { role: 'assistant', content: `Error: ${fallbackMessage}` };
       setNodes((prev) =>
         prev.map((n) => {
           if (n.id === nodeId) {
@@ -1029,12 +897,8 @@ const CanvasChatApp: React.FC = () => {
 
           setNodes((prev) =>
             prev.map((node) => {
-              if (node.id === draggedNode) {
-                return { ...node, x: newX, y: newY };
-              }
-              if (descendants.includes(node.id)) {
-                return { ...node, x: node.x + deltaX, y: node.y + deltaY };
-              }
+              if (node.id === draggedNode) return { ...node, x: newX, y: newY };
+              if (descendants.includes(node.id)) return { ...node, x: node.x + deltaX, y: node.y + deltaY };
               return node;
             })
           );
@@ -1043,11 +907,7 @@ const CanvasChatApp: React.FC = () => {
         const dx = event.clientX - panStart.x;
         const dy = event.clientY - panStart.y;
 
-        setPanOffset((prev) => ({
-          x: prev.x + dx / zoom,
-          y: prev.y + dy / zoom
-        }));
-
+        setPanOffset((prev) => ({ x: prev.x + dx / zoom, y: prev.y + dy / zoom }));
         setPanStart({ x: event.clientX, y: event.clientY });
       }
     },
@@ -1068,45 +928,37 @@ const CanvasChatApp: React.FC = () => {
     };
   }, [handleMouseMove, handleMouseUp]);
 
-  const handleCanvasWheel = useCallback((event: WheelEvent) => {
-    const target = event.target as HTMLElement | null;
-    if (target?.closest('.chat-scrollable') || target?.closest('textarea')) {
-      return;
-    }
+  const handleCanvasWheel = useCallback(
+    (event: WheelEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('.chat-scrollable') || target?.closest('textarea')) return;
+      if (!canvasRef.current) return;
 
-    if (!canvasRef.current) return;
+      const rect = canvasRef.current.getBoundingClientRect();
+      const mouseX = event.clientX - rect.left;
+      const mouseY = event.clientY - rect.top;
 
-    const rect = canvasRef.current.getBoundingClientRect();
-    const mouseX = event.clientX - rect.left;
-    const mouseY = event.clientY - rect.top;
+      const zoomFactor = event.deltaY > 0 ? 0.9 : 1.1;
+      const newZoom = Math.max(0.2, Math.min(3, zoom * zoomFactor));
 
-    const zoomFactor = event.deltaY > 0 ? 0.9 : 1.1;
-    const newZoom = Math.max(0.2, Math.min(3, zoom * zoomFactor));
+      if (newZoom !== zoom) {
+        event.preventDefault();
 
-    if (newZoom !== zoom) {
-      event.preventDefault();
-      
-      // Calculate the point under the mouse cursor in world coordinates
-      const worldX = (mouseX / zoom) - panOffset.x;
-      const worldY = (mouseY / zoom) - panOffset.y;
+        const worldX = mouseX / zoom - panOffset.x;
+        const worldY = mouseY / zoom - panOffset.y;
 
-      // Calculate new pan offset to keep the same point under the mouse
-      const newPanX = (mouseX / newZoom) - worldX;
-      const newPanY = (mouseY / newZoom) - worldY;
+        setZoom(newZoom);
+        setPanOffset({ x: mouseX / newZoom - worldX, y: mouseY / newZoom - worldY });
+      }
+    },
+    [zoom, panOffset.x, panOffset.y]
+  );
 
-      setZoom(newZoom);
-      setPanOffset({ x: newPanX, y: newPanY });
-    }
-  }, [zoom, panOffset.x, panOffset.y]);
-
-  // Add wheel event listener directly to canvas with passive: false
   useEffect(() => {
     const canvas = canvasRef.current;
     if (canvas) {
       canvas.addEventListener('wheel', handleCanvasWheel, { passive: false });
-      return () => {
-        canvas.removeEventListener('wheel', handleCanvasWheel);
-      };
+      return () => canvas.removeEventListener('wheel', handleCanvasWheel);
     }
   }, [handleCanvasWheel]);
 
@@ -1121,18 +973,13 @@ const CanvasChatApp: React.FC = () => {
   };
 
   const handleSelectSession = (sessionId: string) => {
-    // Reset canvas state FIRST, before clearing nodes
-    // This prevents showing the old canvas position
+    if (sessionId === currentSessionId) return;
     setPanOffset({ x: 0, y: 0 });
     setZoom(1);
     setHasInitiallyCentered(false);
-    
-    // Clear nodes immediately to prevent flashing
     setNodes([]);
-    setHasLoadedFromSupabase(false);
+    setHasLoaded(false);
     setCurrentSessionId(sessionId);
-    
-    // Clear input values and processing states
     setInputValues({});
     setIsProcessing({});
     setShowModelSelector({});
@@ -1141,56 +988,38 @@ const CanvasChatApp: React.FC = () => {
   const handleDeleteSession = async (sessionId: string) => {
     if (!user) return;
 
-    // Don't delete if it's the only session
     if (sessions.length <= 1) {
       alert('Cannot delete the last session. Create a new one first.');
       return;
     }
 
-    const { error } = await supabase
-      .from('canvas_states')
-      .delete()
-      .eq('id', sessionId)
-      .eq('user_id', user.id);
-
-    if (error) {
+    try {
+      await pb.collection('canvas_states').delete(sessionId);
+    } catch (error) {
       console.error('Failed to delete session:', error);
       return;
     }
 
-    // Remove from sessions list
     setSessions((prev) => prev.filter((s) => s.id !== sessionId));
 
-    // If we deleted the current session, switch to the first remaining one
     if (currentSessionId === sessionId) {
       const remainingSessions = sessions.filter((s) => s.id !== sessionId);
       if (remainingSessions.length > 0) {
         setCurrentSessionId(remainingSessions[0].id);
       } else {
-        // Create a new session if none remain
         await createNewSession();
       }
     }
   };
 
-  const handleSignOut = async () => {
-    try {
-      await supabase.auth.signOut();
-    } catch (error) {
-      console.error('Failed to sign out:', error);
-    }
+  const handleSignOut = () => {
+    pb.authStore.clear();
   };
 
   const statusText = (() => {
-    if (!hasLoadedFromSupabase) {
-      return 'Loading conversation…';
-    }
-    if (isSyncing) {
-      return 'Saving…';
-    }
-    if (lastSavedAt) {
-      return `Last saved at ${lastSavedAt.toLocaleTimeString()}`;
-    }
+    if (!hasLoaded) return 'Loading conversation…';
+    if (isSyncing) return 'Saving…';
+    if (lastSavedAt) return `Last saved at ${lastSavedAt.toLocaleTimeString()}`;
     return 'All changes saved';
   })();
 
@@ -1205,7 +1034,7 @@ const CanvasChatApp: React.FC = () => {
           <span className={`block text-sm ${statusClass}`}>{statusMessage}</span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-slate-600">{user?.email}</span>
+          <span className="text-sm text-slate-600">{user?.email as string}</span>
           <button
             type="button"
             onClick={handleSignOut}
@@ -1227,7 +1056,7 @@ const CanvasChatApp: React.FC = () => {
           />
         )}
         <div className="relative flex-1 overflow-hidden">
-          {hasLoadedFromSupabase && nodes.length > 0 ? (
+          {hasLoaded && nodes.length > 0 ? (
             <CanvasStage
               nodes={nodes}
               models={MODELS}
@@ -1247,10 +1076,7 @@ const CanvasChatApp: React.FC = () => {
               onToggleModelSelector={toggleModelSelector}
               onUpdateModel={updateNodeModel}
               onInputChange={(nodeId, value) =>
-                setInputValues((prev) => ({
-                  ...prev,
-                  [nodeId]: value
-                }))
+                setInputValues((prev) => ({ ...prev, [nodeId]: value }))
               }
               onSendMessage={sendMessage}
             />
@@ -1260,11 +1086,11 @@ const CanvasChatApp: React.FC = () => {
             </div>
           )}
 
-        <CanvasControls
-          zoom={zoom}
-          onZoomIn={() => setZoom((prev) => Math.min(prev * 1.2, 3))}
-          onZoomOut={() => setZoom((prev) => Math.max(prev / 1.2, 0.3))}
-        />
+          <CanvasControls
+            zoom={zoom}
+            onZoomIn={() => setZoom((prev) => Math.min(prev * 1.2, 3))}
+            onZoomOut={() => setZoom((prev) => Math.max(prev / 1.2, 0.3))}
+          />
 
           <BranchSelectionBanner selectedText={selectedText} onCreateBranch={handleBranchFromBanner} />
         </div>

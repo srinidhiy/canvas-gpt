@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-import { supabase } from '../../lib/supabaseClient';
+import { pb } from '../../lib/pocketbaseClient';
 
 const AuthForm: React.FC = () => {
   const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn');
@@ -8,13 +8,11 @@ const AuthForm: React.FC = () => {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
-    setMessage(null);
 
     if (!email || !password) {
       setError('Email and password are required.');
@@ -30,17 +28,10 @@ const AuthForm: React.FC = () => {
 
     try {
       if (mode === 'signIn') {
-        const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
-        if (signInError) {
-          setError(signInError.message);
-        }
+        await pb.collection('users').authWithPassword(email, password);
       } else {
-        const { error: signUpError } = await supabase.auth.signUp({ email, password });
-        if (signUpError) {
-          setError(signUpError.message);
-        } else {
-          setMessage('Check your email to confirm your account before signing in.');
-        }
+        await pb.collection('users').create({ email, password, passwordConfirm: confirmPassword });
+        await pb.collection('users').authWithPassword(email, password);
       }
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Unexpected authentication error.');
@@ -52,7 +43,6 @@ const AuthForm: React.FC = () => {
   const toggleMode = () => {
     setMode((prev) => (prev === 'signIn' ? 'signUp' : 'signIn'));
     setError(null);
-    setMessage(null);
   };
 
   return (
@@ -91,7 +81,7 @@ const AuthForm: React.FC = () => {
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               required
-              minLength={6}
+              minLength={8}
             />
           </div>
 
@@ -108,13 +98,12 @@ const AuthForm: React.FC = () => {
                 value={confirmPassword}
                 onChange={(event) => setConfirmPassword(event.target.value)}
                 required
-                minLength={6}
+                minLength={8}
               />
             </div>
           ) : null}
 
           {error ? <p className="text-sm text-rose-600">{error}</p> : null}
-          {message ? <p className="text-sm text-emerald-600">{message}</p> : null}
 
           <button
             type="submit"

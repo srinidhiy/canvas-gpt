@@ -1,14 +1,14 @@
 import AuthGate from './components/auth/AuthGate';
 import CanvasChatApp from './components/canvas/CanvasChatApp';
-import { SupabaseAuthProvider } from './contexts/SupabaseAuthContext';
+import { AuthProvider } from './contexts/AuthContext';
 
 const App = () => {
   return (
-    <SupabaseAuthProvider>
+    <AuthProvider>
       <AuthGate>
         <CanvasChatApp />
       </AuthGate>
-    </SupabaseAuthProvider>
+    </AuthProvider>
   );
 };
 
