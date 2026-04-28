@@ -8,82 +8,108 @@ A canvas-based chat application with branching conversations, built with React, 
 - Branching conversations from selected text
 - Multiple AI model support (Claude, GPT-4, etc.)
 - Zoom and pan controls
-- Real-time chat interface
+- Real-time streaming chat interface
 - Visual connection lines between nodes
+- Multiple canvases per user
 
-## Getting Started
+## Architecture
 
-1. Install dependencies:
+- **Frontend** — React + Vite app (static build, deployable anywhere)
+- **PocketBase** — auth and database, self-hosted on your VPS
+- **API server** — Node/Hono server in `server/`, self-hosted on your VPS, holds your AI API keys
+
+---
+
+## VPS Setup
+
+### 1. PocketBase
+
+Run PocketBase via Docker:
+
 ```bash
-npm install
+docker run -d \
+  --name canvas-gpt-pb \
+  -p 8090:8090 \
+  -v /path/to/pb_data:/pb_data \
+  ghcr.io/muchobien/pocketbase:latest
 ```
 
-2. Start the development server:
+Open the admin UI at `http://YOUR_VPS_IP:8090/_/` and complete first-time setup.
+
+Create a collection called `canvas_states` with these fields:
+
+| Field | Type |
+|---|---|
+| `user` | Relation → users (required) |
+| `nodes` | JSON |
+| `title` | Text |
+| `summary` | Text |
+
+Set API rules on the collection:
+
+| Rule | Value |
+|---|---|
+| List/Search | `user = @request.auth.id` |
+| View | `user = @request.auth.id` |
+| Create | `@request.auth.id != ""` |
+| Update | `user = @request.auth.id` |
+| Delete | `user = @request.auth.id` |
+
+### 2. API Server
+
+Copy the `server/` directory to your VPS, then:
+
+```bash
+cd server
+cp .env.example .env
+# fill in your values
+npm install
+npm start        # or use pm2: pm2 start node_modules/.bin/tsx --name canvas-gpt-server -- src/index.ts
+```
+
+`server/.env`:
+
+```
+POCKETBASE_URL=http://localhost:8090
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+PORT=3001
+ALLOWED_ORIGIN=https://yourdomain.com
+```
+
+Open the port in your firewall:
+
+```bash
+ufw allow 3001
+```
+
+---
+
+## Frontend Setup
+
+```bash
+npm install
+cp .env.example .env
+# fill in your values
+```
+
+`.env`:
+
+```
+VITE_POCKETBASE_URL=http://YOUR_VPS_IP:8090
+VITE_API_URL=http://YOUR_VPS_IP:3001
+```
+
+Run in development:
+
 ```bash
 npm run dev
 ```
 
-3. Open your browser and navigate to `http://localhost:5173`
-
-
-## Supabase Setup
-
-1. Create a Supabase project and copy the project URL and anon key.
-2. Add a `.env.local` file (or use your preferred env management) in the project root with:
+Build for production (outputs to `dist/`):
 
 ```bash
-VITE_SUPABASE_URL=your-project-url
-VITE_SUPABASE_ANON_KEY=your-anon-key
+npm run build
 ```
 
-3. In Supabase SQL editor, create the table that stores each user's canvas state and enable row level security:
-
-```sql
-create table if not exists public.canvas_states (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users on delete cascade,
-  nodes jsonb not null,
-  title text,
-  summary text,
-  created_at timestamptz not null default timezone('utc', now()),
-  updated_at timestamptz not null default timezone('utc', now())
-);
-
--- Remove unique constraint on user_id to allow multiple sessions per user
--- If you have an existing table, run this to drop the constraint:
--- alter table public.canvas_states drop constraint if exists canvas_states_user_unique;
-
-alter table public.canvas_states enable row level security;
-
-create policy "Individuals can manage their canvas"
-  on public.canvas_states
-  for all
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-```
-
-4. Run the app with `npm run dev` – you will see an authentication screen. After signing in, your canvas is stored in Supabase and automatically synced.
-
-## AI Provider Setup
-
-1. Install the [Supabase CLI](https://supabase.com/docs/guides/cli) and sign in to the project that backs this app.
-2. Set the Edge Function secrets so your API keys stay server-side:
-
-```bash
-supabase functions secrets set OPENAI_API_KEY=sk-your-openai-key
-supabase functions secrets set ANTHROPIC_API_KEY=sk-your-anthropic-key
-```
-
-3. Deploy the provided `chat-completion` Edge Function:
-
-```bash
-supabase functions deploy chat-completion
-```
-
-4. When developing locally you can run the function with local environment variables (create `supabase/.env` with the same keys):
-
-```bash
-supabase functions serve chat-completion --env-file supabase/.env
-```
-
-The frontend calls this Edge Function via `supabase.functions.invoke`, routing requests to OpenAI (`gpt-4o`, `gpt-4o mini`) or Anthropic (`claude-3.5-sonnet-latest`, `claude-3-haiku-20240307`) depending on the model a node selects.
+Deploy `dist/` to any static host (Vercel, Netlify, Cloudflare Pages, nginx, etc.).
