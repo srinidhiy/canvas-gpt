@@ -198,7 +198,7 @@ app.post('/chat-completion', async (c) => {
     return c.json({ error: 'Invalid JSON payload' }, 400);
   }
 
-  const { model, messages, temperature = 0.7, stream = true } = payload;
+  const { model, messages, temperature = 0.7, stream: shouldStream = true } = payload;
 
   if (!model || !Array.isArray(messages) || messages.length === 0) {
     return c.json({ error: 'model and messages are required' }, 400);
@@ -207,7 +207,7 @@ app.post('/chat-completion', async (c) => {
   const provider = model.startsWith('claude') ? 'anthropic' : 'openai';
 
   try {
-    if (stream) {
+    if (shouldStream) {
       const aiResponse =
         provider === 'anthropic'
           ? await callAnthropic(model, messages, temperature, true)
