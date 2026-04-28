@@ -285,6 +285,7 @@ app.post('/chat-completion', async (c) => {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[chat-completion error]', message, error);
     return c.json({ error: message }, 500);
   }
 });
