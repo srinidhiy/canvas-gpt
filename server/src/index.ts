@@ -208,20 +208,28 @@ app.post('/chat-completion', async (c) => {
 
   try {
     if (shouldStream) {
-      const aiResponse =
-        provider === 'anthropic'
-          ? await callAnthropic(model, messages, temperature, true)
-          : await callOpenAI(model, messages, temperature, true);
-
-      if (!(aiResponse instanceof Response)) {
-        throw new Error('Expected streaming response from AI provider');
-      }
-
       c.header('Content-Type', 'text/event-stream');
       c.header('Cache-Control', 'no-cache');
 
       return stream(c, async (s) => {
-        const reader = aiResponse.body?.getReader();
+        let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+        try {
+          const aiResponse =
+            provider === 'anthropic'
+              ? await callAnthropic(model, messages, temperature, true)
+              : await callOpenAI(model, messages, temperature, true);
+
+          const body = (aiResponse as Response).body;
+          if (!body) {
+            console.error('[stream] AI response has no body, got:', typeof aiResponse);
+            return;
+          }
+          reader = body.getReader();
+        } catch (err) {
+          console.error('[stream] AI call failed:', err);
+          return;
+        }
+
         if (!reader) return;
 
         const decoder = new TextDecoder();
@@ -270,7 +278,7 @@ app.post('/chat-completion', async (c) => {
             }
           }
         } finally {
-          reader.releaseLock();
+          reader?.releaseLock();
         }
       });
     } else {
